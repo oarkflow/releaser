@@ -1,0 +1,348 @@
+# Releaser Configuration for Kotlin Projects
+# Examples: CLI apps, Spring Boot, Multiplatform libraries
+
+version: 2
+
+project_name: my-kotlin-app
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+  - GRADLE_OPTS=-Xmx2G -XX:+UseG1GC
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-kotlin-app
+  kotlin_version: "1.9"
+  organization: com.myorg
+
+# Before hooks - Kotlin/Gradle setup
+before:
+  hooks:
+    # Clean and test
+    - cmd: ./gradlew clean test
+    # Or with Maven: mvn clean test
+    # Check dependencies
+    - cmd: ./gradlew dependencyCheckAnalyze || true
+    # Static analysis
+    - cmd: ./gradlew detekt || true
+
+# Build configurations
+builds:
+  # Fat JAR with Shadow
+  - id: shadow-jar
+    builder: prebuilt
+    main: "build/libs/{{ .ProjectName }}-{{ .Version }}-all.jar"
+    binary: "{{ .ProjectName }}.jar"
+    hooks:
+      pre: ./gradlew shadowJar
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # GraalVM native image
+  - id: native
+    builder: prebuilt
+    main: "build/native/nativeCompile/{{ .ProjectName }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: ./gradlew nativeCompile
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  # Spring Boot JAR
+  - id: spring-boot
+    builder: prebuilt
+    main: "build/libs/{{ .ProjectName }}-{{ .Version }}.jar"
+    binary: "{{ .ProjectName }}.jar"
+    hooks:
+      pre: ./gradlew bootJar
+    skip: false  # Enable for Spring Boot projects
+
+  # Kotlin/Native (Multiplatform)
+  - id: kotlin-native
+    builder: prebuilt
+    main: "build/bin/native/releaseExecutable/{{ .ProjectName }}.kexe"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: ./gradlew linkReleaseExecutableNative
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    skip: true  # Enable for Kotlin/Native projects
+
+  # Kotlin/JS (Node.js)
+  - id: kotlin-js
+    builder: prebuilt
+    main: "build/js/packages/{{ .ProjectName }}/kotlin/{{ .ProjectName }}.js"
+    binary: "{{ .ProjectName }}.js"
+    hooks:
+      pre: ./gradlew jsBrowserProductionWebpack
+    skip: true  # Enable for Kotlin/JS projects
+
+# Archive configurations
+archives:
+  # Native binary distribution
+  - id: native-dist
+    builds:
+      - native
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - config/*.yaml.example
+
+  # JAR distribution
+  - id: jar-dist
+    builds:
+      - shadow-jar
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_jvm"
+    files:
+      - build/libs/*.jar
+      - LICENSE*
+      - README*
+      - bin/start.sh
+      - bin/start.bat
+
+  # Spring Boot distribution
+  - id: spring-boot-dist
+    builds:
+      - spring-boot
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_spring-boot"
+    files:
+      - build/libs/*.jar
+      - src/main/resources/application*.yml
+      - docker-compose.yml
+      - LICENSE*
+      - README*
+
+  # Library for Maven/Gradle
+  - id: maven-lib
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-lib"
+    files:
+      - build/libs/*.jar
+      - build/publications/**/*
+
+# Linux packages
+nfpms:
+  - id: linux-packages
+    package_name: "{{ .ProjectName }}"
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-kotlin-app
+    maintainer: Team <team@myorg.com>
+    description: My Kotlin application
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    dependencies:
+      - java-21-openjdk-headless
+    recommends:
+      - ca-certificates
+    contents:
+      - src: ./build/native/nativeCompile/my-kotlin-app
+        dst: /usr/bin/my-kotlin-app
+        file_info:
+          mode: 0755
+      - src: ./config/application.yml.example
+        dst: /etc/my-kotlin-app/application.yml.example
+      - src: ./systemd/my-kotlin-app.service
+        dst: /lib/systemd/system/my-kotlin-app.service
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+# Homebrew
+brews:
+  - name: my-kotlin-app
+    description: My Kotlin application
+    homepage: https://github.com/myorg/my-kotlin-app
+    license: Apache-2.0
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    dependencies:
+      - name: openjdk@21
+        type: optional  # Not needed for native build
+    install: |
+      # For native build
+      bin.install "my-kotlin-app"
+      # For JAR build:
+      # libexec.install "my-kotlin-app.jar"
+      # bin.write_jar_script libexec/"my-kotlin-app.jar", "my-kotlin-app"
+    test: |
+      system "#{bin}/my-kotlin-app", "--version"
+
+# Docker images
+dockers:
+  # Native image (smallest)
+  - id: native
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-kotlin-app:{{ .Version }}"
+      - "ghcr.io/myorg/my-kotlin-app:latest"
+    dockerfile: Dockerfile.native
+    extra_files:
+      - config/
+
+  # JRE-based (for Spring Boot)
+  - id: jre
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-kotlin-app:{{ .Version }}-jre"
+    dockerfile: Dockerfile.jre
+    extra_files:
+      - build/libs/*.jar
+      - config/
+
+  # JLink custom runtime
+  - id: jlink
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-kotlin-app:{{ .Version }}-jlink"
+    dockerfile: Dockerfile.jlink
+
+# Docker manifest for multi-arch
+docker_manifests:
+  - name_template: "ghcr.io/myorg/my-kotlin-app:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/myorg/my-kotlin-app:{{ .Version }}-amd64"
+      - "ghcr.io/myorg/my-kotlin-app:{{ .Version }}-arm64"
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Sign
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+    artifacts: all
+
+# SBOM
+sboms:
+  - artifacts: binary
+    method: syft
+  - artifacts: package
+    method: syft
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  abbrev: 0
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+      - "^ci:"
+      - "^style:"
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "⚡ Performance"
+      regexp: "^perf"
+      order: 2
+    - title: "📦 Dependencies"
+      regexp: "^chore\\(deps\\)"
+      order: 3
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 4
+    - title: "Others"
+      order: 999
+
+# AI Changelog enhancement
+ai:
+  enabled: true
+  provider: openai
+  model: gpt-4
+  prompt: "Generate professional release notes for this Kotlin application release"
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-kotlin-app
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+  header: |
+    ## What's New in {{ .Version }}
+
+    This release includes bug fixes and performance improvements.
+
+# Publish to Maven Central
+publishers:
+  - name: sonatype
+    url: https://oss.sonatype.org/service/local/staging/deploy/maven2/
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#kotlin-releases"
+    message_template: |
+      🎉 *{{ .ProjectName }} {{ .Tag }}* has been released!
+
+      {{ .ReleaseURL }}
+  discord:
+    enabled: true
+    message_template: "🎉 {{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+  twitter:
+    enabled: false
+    message_template: "{{ .ProjectName }} {{ .Tag }} is out! Check out the release notes: {{ .ReleaseURL }}"
+
+# After hooks
+after:
+  hooks:
+    # Publish to Maven Central via Gradle
+    - cmd: ./gradlew publish publishToSonatype closeAndReleaseSonatypeStagingRepository || true
+    # Update KDoc
+    - cmd: ./gradlew dokkaHtml || true
+    # Push to GitHub Pages
+    - cmd: gh pages --publish build/dokka/html || true

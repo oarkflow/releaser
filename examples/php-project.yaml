@@ -1,0 +1,232 @@
+# Releaser Configuration for PHP Projects
+# Example: CLI tool, Laravel package, or Composer library
+
+version: 2
+
+project_name: my-php-cli
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - PHP_VERSION=8.2
+  - COMPOSER_NO_INTERACTION=1
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-php-cli
+  vendor_name: myorg
+  package_name: my-php-cli
+
+# Before hooks - PHP/Composer setup
+before:
+  hooks:
+    - cmd: composer install --no-dev --optimize-autoloader
+    - cmd: composer dump-autoload --optimize
+    - cmd: php artisan config:clear || true
+    - cmd: php artisan route:clear || true
+
+# Build configurations for PHP
+builds:
+  # Option 1: Use Box for PHAR creation
+  - id: phar
+    builder: prebuilt
+    main: "dist/{{ .ProjectName }}.phar"
+    binary: "{{ .ProjectName }}.phar"
+    hooks:
+      pre: |
+        # Install box if not present
+        composer global require humbug/box || true
+        # Create PHAR using box
+        box compile
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Option 2: Native PHP with embedded interpreter (using micro)
+  - id: native
+    builder: prebuilt
+    main: "build/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        # Build native binary using phpmicro or static-php-cli
+        # This requires pre-built PHP micro binaries
+        php build-native.php --os={{ .Os }} --arch={{ .Arch }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows  # Windows native requires different approach
+
+# Archive configurations
+archives:
+  - id: phar-archive
+    builds:
+      - phar
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - config/*.example.php
+      - docs/*
+
+  - id: composer-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_composer"
+    files:
+      - src/**/*
+      - composer.json
+      - composer.lock
+      - LICENSE*
+      - README*
+
+# Linux packages for PHP CLI
+nfpms:
+  - id: deb-rpm
+    package_name: "{{ .ProjectName }}"
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-php-cli
+    maintainer: Team <team@myorg.com>
+    description: My PHP CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    dependencies:
+      - php-cli >= 8.1
+      - php-json
+      - php-mbstring
+    contents:
+      - src: ./dist/my-php-cli.phar
+        dst: /usr/bin/my-php-cli
+        type: file
+        file_info:
+          mode: 0755
+      - src: ./config/my-php-cli.ini.example
+        dst: /etc/my-php-cli/config.ini.example
+
+# Homebrew (PHAR distribution)
+brews:
+  - name: my-php-cli
+    description: My PHP CLI application
+    homepage: https://github.com/myorg/my-php-cli
+    license: MIT
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    dependencies:
+      - name: php
+        type: required
+    install: |
+      bin.install "my-php-cli.phar" => "my-php-cli"
+    test: |
+      system "#{bin}/my-php-cli", "--version"
+
+# NPM package (for Node.js wrapper)
+npms:
+  - name: "@myorg/my-php-cli"
+    description: My PHP CLI - Node.js wrapper
+    homepage: https://github.com/myorg/my-php-cli
+    license: MIT
+    scope: myorg
+    access: public
+    registry: https://registry.npmjs.org
+    bin:
+      my-php-cli: ./bin/my-php-cli.js
+    dependencies:
+      which: "^3.0.0"
+    files:
+      - bin/
+      - dist/
+      - README.md
+
+# Docker images
+dockers:
+  - id: php-cli
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-php-cli:{{ .Version }}"
+      - "ghcr.io/myorg/my-php-cli:latest"
+    dockerfile: Dockerfile.php
+    extra_files:
+      - composer.json
+      - composer.lock
+      - src/
+      - config/
+    build_args:
+      - "PHP_VERSION=8.2"
+
+# Signing
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--output"
+      - "${signature}"
+      - "--detach-sig"
+      - "${artifact}"
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+  groups:
+    - title: "Features"
+      regexp: "^feat"
+      order: 0
+    - title: "Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "Performance"
+      regexp: "^perf"
+      order: 2
+
+# Release configuration
+release:
+  github:
+    owner: myorg
+    name: my-php-cli
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  extra_files:
+    - glob: ./dist/*.phar
+
+# Announce
+announce:
+  slack:
+    enabled: true
+    channel: "#php-releases"
+    message_template: "🐘 {{ .ProjectName }} {{ .Tag }} released!"
+
+# After hooks - cleanup
+after:
+  hooks:
+    - cmd: composer install  # Restore dev dependencies

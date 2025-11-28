@@ -1,0 +1,263 @@
+# Releaser Configuration for Go Projects
+# Example: CLI tool, web server, or library
+
+version: 2
+
+project_name: mygo-cli
+
+# Distribution folder
+dist: dist
+
+# Environment variables for builds
+env:
+  - CGO_ENABLED=0
+  - GO111MODULE=on
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: mygo-cli
+
+# Before hooks
+before:
+  hooks:
+    - cmd: go mod tidy
+    - cmd: go generate ./...
+    - cmd: go fmt ./...
+    - cmd: go vet ./...
+
+# Build configurations
+builds:
+  - id: cli
+    main: ./cmd/mygo-cli
+    binary: mygo-cli
+    builder: go
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=releaser
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - "386"
+    goarm:
+      - "6"
+      - "7"
+    goamd64:
+      - v1
+      - v3
+    ignore:
+      - goos: darwin
+        goarch: "386"
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: arm
+      - goos: freebsd
+        goarch: arm64
+    mod: readonly
+    hooks:
+      pre: echo "Building {{.Os}}/{{.Arch}}"
+      post: echo "Built {{.Path}}"
+
+  # Library/SDK build (no binary, just validation)
+  - id: sdk
+    main: ./sdk
+    binary: ""
+    builder: go
+    skip: true  # Only validate, don't produce binary
+
+# Archive configurations
+archives:
+  - id: default
+    builds:
+      - cli
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - docs/*
+      - completions/*
+
+# Linux packages
+nfpms:
+  - id: packages
+    package_name: mygo-cli
+    vendor: MyOrg
+    homepage: https://github.com/myorg/mygo-cli
+    maintainer: Team <team@myorg.com>
+    description: My awesome Go CLI tool
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    dependencies:
+      - git
+    recommends:
+      - golang
+    contents:
+      - src: ./completions/bash
+        dst: /etc/bash_completion.d/mygo-cli
+      - src: ./completions/zsh
+        dst: /usr/share/zsh/vendor-completions/_mygo-cli
+      - src: ./LICENSE
+        dst: /usr/share/doc/mygo-cli/LICENSE
+
+# Homebrew tap
+brews:
+  - name: mygo-cli
+    description: My awesome Go CLI tool
+    homepage: https://github.com/myorg/mygo-cli
+    license: MIT
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    directory: Formula
+    install: |
+      bin.install "mygo-cli"
+      bash_completion.install "completions/bash" => "mygo-cli"
+      zsh_completion.install "completions/zsh" => "_mygo-cli"
+    test: |
+      system "#{bin}/mygo-cli", "--version"
+    dependencies:
+      - name: go
+        type: optional
+
+# Scoop bucket (Windows)
+scoops:
+  - name: mygo-cli
+    description: My awesome Go CLI tool
+    homepage: https://github.com/myorg/mygo-cli
+    license: MIT
+    bucket:
+      owner: myorg
+      name: scoop-bucket
+
+# Docker images
+dockers:
+  - id: alpine
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/mygo-cli:{{ .Version }}-amd64"
+      - "ghcr.io/myorg/mygo-cli:latest-amd64"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source={{.GitURL}}"
+
+  - id: alpine-arm64
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/myorg/mygo-cli:{{ .Version }}-arm64"
+      - "ghcr.io/myorg/mygo-cli:latest-arm64"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+# Docker manifests for multi-arch
+docker_manifests:
+  - name_template: "ghcr.io/myorg/mygo-cli:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/myorg/mygo-cli:{{ .Version }}-amd64"
+      - "ghcr.io/myorg/mygo-cli:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/myorg/mygo-cli:latest"
+    image_templates:
+      - "ghcr.io/myorg/mygo-cli:latest-amd64"
+      - "ghcr.io/myorg/mygo-cli:latest-arm64"
+
+# Signing
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sig"
+      - "${artifact}"
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# SBOM generation
+sboms:
+  - artifacts: binary
+    method: syft
+    format: spdx-json
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 2
+    - title: "🔧 Maintenance"
+      regexp: "^chore|^refactor|^style"
+      order: 3
+
+# Release configuration
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+  header: |
+    ## What's New in {{ .Tag }}
+
+    Welcome to this new release!
+  footer: |
+    ---
+    **Full Changelog**: https://github.com/{{ .Env.GITHUB_OWNER }}/{{ .Env.GITHUB_REPO }}/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#releases"
+    message_template: "🎉 {{ .ProjectName }} {{ .Tag }} is out! Check it out: {{ .ReleaseURL }}"
+  discord:
+    enabled: true
+    message_template: "🚀 New release: **{{ .ProjectName }} {{ .Tag }}**\n{{ .ReleaseURL }}"

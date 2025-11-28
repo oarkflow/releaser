@@ -1,0 +1,253 @@
+# Releaser Configuration for Python Projects
+# Examples: CLI tools, libraries, data science packages
+
+version: 2
+
+project_name: my-python-cli
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - PYTHONDONTWRITEBYTECODE=1
+  - PIP_NO_CACHE_DIR=1
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-python-cli
+  python_version: "3.12"
+
+# Before hooks
+before:
+  hooks:
+    # Install dependencies
+    - cmd: pip install -e ".[dev]"
+    # Run tests
+    - cmd: pytest -v
+    # Type checking
+    - cmd: mypy src/
+    # Lint
+    - cmd: ruff check src/
+    # Format check
+    - cmd: ruff format --check src/
+
+# Build configurations
+builds:
+  # PyInstaller standalone binary
+  - id: pyinstaller
+    builder: python
+    main: src/my_python_cli/__main__.py
+    binary: my-python-cli
+    hooks:
+      pre: |
+        pip install pyinstaller
+        pyinstaller --onefile --name my-python-cli src/my_python_cli/__main__.py
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  # Nuitka compiled binary (faster than PyInstaller)
+  - id: nuitka
+    builder: python
+    main: src/my_python_cli/__main__.py
+    binary: my-python-cli-nuitka
+    hooks:
+      pre: |
+        pip install nuitka
+        python -m nuitka --standalone --onefile --output-filename=my-python-cli-nuitka src/my_python_cli/__main__.py
+    skip: true  # Enable for Nuitka builds
+
+  # Shiv/PEX self-contained archive
+  - id: shiv
+    builder: prebuilt
+    main: "dist/my-python-cli.pyz"
+    binary: my-python-cli.pyz
+    hooks:
+      pre: |
+        pip install shiv
+        shiv -c my-python-cli -o dist/my-python-cli.pyz .
+    skip: true  # Enable for Shiv builds
+
+# Archive configurations
+archives:
+  # Standalone binaries
+  - id: binaries
+    builds:
+      - pyinstaller
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+  # Source distribution
+  - id: source
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+    files:
+      - src/
+      - pyproject.toml
+      - setup.py
+      - requirements*.txt
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+  # Wheel distribution
+  - id: wheel
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_wheel"
+    files:
+      - dist/*.whl
+      - dist/*.tar.gz
+
+# Linux packages
+nfpms:
+  - id: linux-packages
+    package_name: "{{ .ProjectName }}"
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-python-cli
+    maintainer: Team <team@myorg.com>
+    description: My Python CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    dependencies:
+      - python3
+    contents:
+      - src: ./dist/pyinstaller/my-python-cli
+        dst: /usr/bin/my-python-cli
+        file_info:
+          mode: 0755
+      - src: ./config/config.example.yaml
+        dst: /etc/my-python-cli/config.yaml.example
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Homebrew
+brews:
+  - name: my-python-cli
+    description: My Python CLI application
+    homepage: https://github.com/myorg/my-python-cli
+    license: MIT
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    dependencies:
+      - name: python@3.12
+        type: optional  # Not needed for PyInstaller binary
+    install: |
+      bin.install "my-python-cli"
+    test: |
+      system "#{bin}/my-python-cli", "--version"
+
+# Docker images
+dockers:
+  # Slim Python image
+  - id: slim
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-python-cli:{{ .Version }}"
+      - "ghcr.io/myorg/my-python-cli:latest"
+    dockerfile: Dockerfile.slim
+    extra_files:
+      - src/
+      - pyproject.toml
+      - requirements.txt
+
+  # Distroless with PyInstaller binary
+  - id: distroless
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-python-cli:{{ .Version }}-distroless"
+    dockerfile: Dockerfile.distroless
+    extra_files:
+      - dist/pyinstaller/my-python-cli
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Sign
+signs:
+  - cmd: gpg
+    args:
+      - "--batch"
+      - "--output"
+      - "${signature}"
+      - "--detach-sig"
+      - "${artifact}"
+    artifacts: checksum
+
+# SBOM
+sboms:
+  - artifacts: binary
+    method: syft
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 2
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-python-cli
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+
+# PyPI publishing
+publishers:
+  - name: pypi
+    url: https://upload.pypi.org/legacy/
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#python-releases"
+    message_template: "🐍 {{ .ProjectName }} {{ .Tag }} released!"
+
+# After hooks
+after:
+  hooks:
+    # Build wheel and sdist
+    - cmd: python -m build
+    # Publish to PyPI
+    - cmd: twine upload dist/*.whl dist/*.tar.gz --skip-existing || true
+    # Update docs
+    - cmd: mkdocs gh-deploy || true

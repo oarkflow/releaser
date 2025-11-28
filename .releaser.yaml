@@ -1,0 +1,381 @@
+# Releaser Configuration Example
+# This is a comprehensive example showing all available options
+
+version: 2
+
+# Project name used in filenames and templates
+project_name: myapp
+
+# Distribution folder (default: dist)
+dist: dist
+
+# Git configuration
+git:
+  tag_sort: -version:creatordate
+  prerelease_suffix: beta
+
+# Environment variables
+env:
+  - CGO_ENABLED=0
+  - GO111MODULE=on
+
+# Before hooks (run before the build)
+before:
+  hooks:
+    - cmd: go mod tidy
+    - cmd: go generate ./...
+
+# Build configurations
+builds:
+  # Go build
+  - id: myapp
+    main: ./cmd/myapp
+    binary: myapp
+    lang: go
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goarm:
+      - "6"
+      - "7"
+    goamd64:
+      - v1
+      - v3
+    ignore:
+      - goos: darwin
+        goarch: "386"
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+    hooks:
+      pre: echo "Building {{.Target}}"
+      post: echo "Built {{.Target}}"
+
+  # Rust build example
+  - id: myapp-rust
+    lang: rust
+    dir: ./rust-component
+    binary: myapp-rust
+    targets:
+      - x86_64-unknown-linux-gnu
+      - x86_64-apple-darwin
+      - x86_64-pc-windows-msvc
+
+  # Node.js build example
+  - id: myapp-node
+    lang: nodejs
+    dir: ./node-component
+    hooks:
+      pre: npm install
+
+# Archive configurations
+archives:
+  - id: default
+    builds:
+      - myapp
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - src: docs/*
+        dst: docs
+
+# Checksum configuration
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  disable: false
+
+# Snapshot configuration
+snapshot:
+  version_template: "{{ .Version }}-SNAPSHOT-{{.ShortCommit}}"
+
+# Changelog configuration
+changelog:
+  sort: asc
+  use: conventional
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 2
+    - title: "🏗️ Refactoring"
+      regexp: "^refactor"
+      order: 3
+    - title: "🧪 Tests"
+      regexp: "^test"
+      order: 4
+    - title: "⚡ Performance"
+      regexp: "^perf"
+      order: 5
+    - title: "🔧 Other"
+      order: 99
+  filters:
+    exclude:
+      - "^chore"
+      - "^ci"
+      - "^style"
+  ai:
+    enabled: false
+    provider: openai
+    model: gpt-4
+
+# Release configuration
+release:
+  github:
+    owner: myorg
+    name: myrepo
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+  header: |
+    ## What's Changed
+    
+    This release includes various improvements and bug fixes.
+  footer: |
+    **Full Changelog**: https://github.com/{{.Env.GITHUB_OWNER}}/{{.Env.GITHUB_REPO}}/compare/{{.PreviousTag}}...{{.Tag}}
+  extra_files:
+    - glob: "./dist/*.sig"
+
+# Sign configuration
+signs:
+  - id: default
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+# Docker configuration
+dockers:
+  - id: myapp
+    ids:
+      - myapp
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: docker
+    image_templates:
+      - "myorg/myapp:{{ .Tag }}"
+      - "myorg/myapp:v{{ .Major }}"
+      - "myorg/myapp:v{{ .Major }}.{{ .Minor }}"
+      - "myorg/myapp:latest"
+    build_args:
+      VERSION: "{{ .Version }}"
+      COMMIT: "{{ .Commit }}"
+    push: true
+
+  - id: myapp-arm64
+    ids:
+      - myapp
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.arm64
+    image_templates:
+      - "myorg/myapp:{{ .Tag }}-arm64"
+    buildx: true
+    buildx_platforms:
+      - linux/arm64
+
+# Docker manifests
+docker_manifests:
+  - id: myapp
+    name_template: "myorg/myapp:{{ .Version }}"
+    image_templates:
+      - "myorg/myapp:{{ .Version }}-amd64"
+      - "myorg/myapp:{{ .Version }}-arm64"
+
+# Linux packages (nfpm)
+nfpms:
+  - id: myapp
+    package_name: myapp
+    vendor: My Organization
+    homepage: https://github.com/myorg/myapp
+    maintainer: Maintainer <maintainer@example.com>
+    description: My awesome application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    contents:
+      - src: ./scripts/myapp.service
+        dst: /etc/systemd/system/myapp.service
+        type: config
+      - src: ./config/default.yaml
+        dst: /etc/myapp/config.yaml
+        type: config|noreplace
+    scripts:
+      postinstall: ./scripts/postinstall.sh
+      preremove: ./scripts/preremove.sh
+    dependencies:
+      - libc6
+
+# macOS App Bundle
+app_bundles:
+  - id: myapp
+    build: myapp
+    name: MyApp
+    identifier: com.myorg.myapp
+    icon: ./assets/icon.icns
+    category: public.app-category.developer-tools
+    high_resolution: true
+    sign:
+      identity: "Developer ID Application: My Org (TEAMID)"
+      hardened: true
+      timestamp: true
+
+# DMG disk image
+dmgs:
+  - id: myapp
+    app_bundle: myapp
+    name: MyApp
+    format: UDZO
+    icon: ./assets/dmg-icon.icns
+    background: ./assets/dmg-background.png
+    window_width: 600
+    window_height: 400
+    applications_symlink: true
+    notarize:
+      enabled: true
+
+# Windows MSI
+msis:
+  - id: myapp
+    build: myapp
+    name: MyApp
+    product_name: My Application
+    manufacturer: My Organization
+    upgrade_code: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+    icon: ./assets/icon.ico
+
+# Windows NSIS
+nsiss:
+  - id: myapp
+    build: myapp
+    name: MyApp
+    installer: myapp-setup
+
+# Homebrew
+brews:
+  - name: myapp
+    ids:
+      - default
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    folder: Formula
+    homepage: https://github.com/myorg/myapp
+    description: My awesome application
+    license: MIT
+    test: |
+      system "#{bin}/myapp --version"
+    install: |
+      bin.install "myapp"
+
+# NPM publishing
+npm:
+  - name: "@myorg/myapp"
+    registry: https://registry.npmjs.org
+    access: public
+
+# Scoop
+scoops:
+  - bucket:
+      owner: myorg
+      name: scoop-bucket
+    homepage: https://github.com/myorg/myapp
+    description: My awesome application
+    license: MIT
+
+# SBOM generation
+sboms:
+  - id: default
+    method: syft
+    format: spdx-json
+
+# UPX compression
+upxs:
+  - id: default
+    enabled: true
+    goos:
+      - linux
+      - windows
+    compression_level: 9
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#releases"
+    username: "Release Bot"
+    icon_emoji: ":rocket:"
+    message_template: |
+      🚀 *{{ .ProjectName }}* {{ .Version }} has been released!
+      
+      {{ .Changelog }}
+      
+      <{{ .ReleaseURL }}|View Release>
+
+  discord:
+    enabled: true
+    author: Release Bot
+    message_template: |
+      🚀 **{{ .ProjectName }}** {{ .Version }} has been released!
+      
+      {{ .Changelog }}
+      
+      [View Release]({{ .ReleaseURL }})
+
+  telegram:
+    enabled: true
+    chat_id: "-123456789"
+    parse_mode: Markdown
+    message_template: |
+      🚀 *{{ .ProjectName }}* {{ .Version }} has been released!
+      
+      {{ .Changelog }}
+      
+      [View Release]({{ .ReleaseURL }})
+
+  webhook:
+    enabled: true
+    endpoint_url: "https://api.example.com/releases"
+    headers:
+      Authorization: "Bearer {{ .Env.WEBHOOK_TOKEN }}"
+      Content-Type: "application/json"
+
+# After hooks (run after the release)
+after:
+  hooks:
+    - cmd: echo "Release complete!"

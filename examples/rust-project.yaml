@@ -1,0 +1,246 @@
+# Releaser Configuration for Rust Projects
+# Examples: CLI tools, libraries, system tools
+
+version: 2
+
+project_name: my-rust-cli
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - CARGO_INCREMENTAL=0
+  - RUSTFLAGS=-C target-feature=+crt-static
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-rust-cli
+  cargo_profile: release
+
+# Before hooks
+before:
+  hooks:
+    # Format check
+    - cmd: cargo fmt --check
+    # Lint
+    - cmd: cargo clippy -- -D warnings
+    # Test
+    - cmd: cargo test --all-features
+    # Security audit
+    - cmd: cargo audit || true
+
+# Build configurations
+builds:
+  - id: rust-binary
+    builder: rust
+    main: ./src/main.rs
+    binary: my-rust-cli
+    flags:
+      - "--release"
+      - "--locked"
+    env:
+      - CARGO_INCREMENTAL=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64  # Limited Windows ARM64 support
+
+  # Musl static build for Linux
+  - id: musl
+    builder: rust
+    main: ./src/main.rs
+    binary: my-rust-cli-static
+    flags:
+      - "--release"
+      - "--target=x86_64-unknown-linux-musl"
+    env:
+      - CC=musl-gcc
+    goos:
+      - linux
+    goarch:
+      - amd64
+    skip: true  # Enable for musl builds
+
+# Archive configurations
+archives:
+  - id: default
+    builds:
+      - rust-binary
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - config/*.example.toml
+
+  - id: musl-archive
+    builds:
+      - musl
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_linux_amd64_musl"
+    files:
+      - LICENSE*
+      - README*
+
+# Linux packages
+nfpms:
+  - id: linux-packages
+    package_name: "{{ .ProjectName }}"
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-rust-cli
+    maintainer: Team <team@myorg.com>
+    description: My Rust CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    bindir: /usr/bin
+    contents:
+      - src: ./target/release/my-rust-cli
+        dst: /usr/bin/my-rust-cli
+        file_info:
+          mode: 0755
+      - src: ./config/config.example.toml
+        dst: /etc/my-rust-cli/config.toml.example
+      - src: ./completions/my-rust-cli.bash
+        dst: /usr/share/bash-completion/completions/my-rust-cli
+      - src: ./completions/my-rust-cli.zsh
+        dst: /usr/share/zsh/site-functions/_my-rust-cli
+      - src: ./completions/my-rust-cli.fish
+        dst: /usr/share/fish/vendor_completions.d/my-rust-cli.fish
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+# Homebrew
+brews:
+  - name: my-rust-cli
+    description: My Rust CLI application
+    homepage: https://github.com/myorg/my-rust-cli
+    license: MIT
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    install: |
+      bin.install "my-rust-cli"
+      bash_completion.install "completions/my-rust-cli.bash" => "my-rust-cli"
+      zsh_completion.install "completions/my-rust-cli.zsh" => "_my-rust-cli"
+      fish_completion.install "completions/my-rust-cli.fish"
+    test: |
+      system "#{bin}/my-rust-cli", "--version"
+
+# Docker images
+dockers:
+  # Distroless
+  - id: distroless
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-rust-cli:{{ .Version }}"
+      - "ghcr.io/myorg/my-rust-cli:latest"
+    dockerfile: Dockerfile.distroless
+    extra_files:
+      - target/release/my-rust-cli
+
+  # Alpine
+  - id: alpine
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-rust-cli:{{ .Version }}-alpine"
+    dockerfile: Dockerfile.alpine
+    extra_files:
+      - target/x86_64-unknown-linux-musl/release/my-rust-cli
+    skip_build: true  # Enable for musl builds
+
+# UPX compression
+upxs:
+  - enabled: true
+    compress: best
+    ids:
+      - rust-binary
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Sign with cosign
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+    artifacts: all
+
+# SBOM
+sboms:
+  - artifacts: binary
+    method: syft
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 2
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-rust-cli
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+
+# crates.io publishing
+publishers:
+  - name: crates
+    url: https://crates.io/api/v1/crates/new
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#rust-releases"
+    message_template: "🦀 {{ .ProjectName }} {{ .Tag }} released!"
+
+# After hooks
+after:
+  hooks:
+    # Publish to crates.io
+    - cmd: cargo publish --token $CARGO_REGISTRY_TOKEN || true
+    # Generate docs
+    - cmd: cargo doc --no-deps || true

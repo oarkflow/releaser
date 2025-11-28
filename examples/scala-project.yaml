@@ -1,0 +1,262 @@
+# Releaser Configuration for Scala Projects
+# Examples: CLI, Spark applications, SBT libraries
+
+version: 2
+
+project_name: my-scala-app
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+  - SBT_OPTS=-Xmx2G -XX:+UseG1GC
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-scala-app
+  scala_version: "3.3"
+  organization: com.myorg
+
+# Before hooks - Scala/SBT setup
+before:
+  hooks:
+    # Compile and test
+    - cmd: sbt clean compile test
+    # Or with Mill: mill _.compile && mill _.test
+    # Generate ScalaDoc
+    - cmd: sbt doc
+
+# Build configurations
+builds:
+  # Fat JAR with sbt-assembly
+  - id: assembly
+    builder: prebuilt
+    main: "target/scala-{{ .Env.SCALA_VERSION }}/{{ .ProjectName }}-assembly-{{ .Version }}.jar"
+    binary: "{{ .ProjectName }}.jar"
+    hooks:
+      pre: sbt assembly
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Native image with Scala Native or GraalVM
+  - id: native
+    builder: prebuilt
+    main: "target/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        # For Scala Native
+        sbt nativeLink
+        # Or for GraalVM
+        sbt 'GraalVMNativeImage / packageBin'
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows  # Scala Native Windows support is limited
+
+  # Scala.js for Node.js
+  - id: scalajs
+    builder: prebuilt
+    main: "target/scala-{{ .Env.SCALA_VERSION }}/{{ .ProjectName }}-opt.js"
+    binary: "{{ .ProjectName }}.js"
+    hooks:
+      pre: sbt fullLinkJS
+    skip: true  # Enable for Scala.js projects
+
+  # Spark application
+  - id: spark-app
+    builder: prebuilt
+    main: "target/scala-{{ .Env.SCALA_VERSION }}/{{ .ProjectName }}-spark-{{ .Version }}.jar"
+    binary: "{{ .ProjectName }}-spark.jar"
+    hooks:
+      pre: sbt 'project spark' assembly
+    skip: true  # Enable for Spark projects
+
+# Archive configurations
+archives:
+  # Native binaries
+  - id: native-dist
+    builds:
+      - native
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+  # JAR distribution
+  - id: jar-dist
+    builds:
+      - assembly
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_jvm"
+    files:
+      - target/scala-*/*.jar
+      - LICENSE*
+      - README*
+      - bin/run.sh
+      - config/*.example.conf
+
+  # Library for Maven/Ivy
+  - id: maven-lib
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-lib"
+    files:
+      - target/scala-*/*.jar
+      - target/scala-*/*.pom
+      - target/scala-*/*-sources.jar
+      - target/scala-*/*-javadoc.jar
+
+# Linux packages
+nfpms:
+  - id: linux-packages
+    package_name: "{{ .ProjectName }}"
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-scala-app
+    maintainer: Team <team@myorg.com>
+    description: My Scala application
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    dependencies:
+      - java-21-openjdk-headless
+    contents:
+      - src: ./target/my-scala-app
+        dst: /usr/bin/my-scala-app
+        file_info:
+          mode: 0755
+      - src: ./config/application.conf.example
+        dst: /etc/my-scala-app/application.conf.example
+
+# Homebrew
+brews:
+  - name: my-scala-app
+    description: My Scala application
+    homepage: https://github.com/myorg/my-scala-app
+    license: Apache-2.0
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    dependencies:
+      - name: openjdk@21
+        type: required
+    install: |
+      libexec.install "my-scala-app.jar"
+      bin.write_jar_script libexec/"my-scala-app.jar", "my-scala-app"
+    test: |
+      system "#{bin}/my-scala-app", "--version"
+
+# Docker images
+dockers:
+  # JRE-based
+  - id: jre
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-scala-app:{{ .Version }}"
+      - "ghcr.io/myorg/my-scala-app:latest"
+    dockerfile: Dockerfile.jre
+    extra_files:
+      - target/scala-*/my-scala-app-assembly-*.jar
+      - config/
+
+  # Native image
+  - id: native-docker
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-scala-app:{{ .Version }}-native"
+    dockerfile: Dockerfile.native
+
+  # Spark application
+  - id: spark
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-scala-app:{{ .Version }}-spark"
+    dockerfile: Dockerfile.spark
+    skip_build: true  # Enable for Spark projects
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# SBOM
+sboms:
+  - artifacts: binary
+    method: syft
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📦 Dependencies"
+      regexp: "^chore\\(deps\\)"
+      order: 2
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-scala-app
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+# Publish to Sonatype/Maven Central
+uploads:
+  - name: sonatype
+    method: PUT
+    target: https://oss.sonatype.org/service/local/staging/deploy/maven2/
+    username: "{{ .Env.SONATYPE_USERNAME }}"
+    custom_headers:
+      Authorization: "Bearer {{ .Env.SONATYPE_TOKEN }}"
+    ids:
+      - maven-lib
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#scala-releases"
+    message_template: "🔷 {{ .ProjectName }} {{ .Tag }} released!"
+  discord:
+    enabled: true
+
+# After hooks
+after:
+  hooks:
+    # Publish to Maven Central via sbt
+    - cmd: sbt +publishSigned sonatypeBundleRelease || true
+    # Update ScalaDoc
+    - cmd: sbt ghpagesPushSite || true

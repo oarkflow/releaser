@@ -1,0 +1,205 @@
+# Releaser Configuration for React.js Projects
+# Example: React component library or web application
+
+version: 2
+
+project_name: my-react-lib
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - NODE_ENV=production
+  - CI=true
+  - GENERATE_SOURCEMAP=false
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-react-lib
+  npm_scope: myorg
+
+# Before hooks
+before:
+  hooks:
+    - cmd: npm ci
+    - cmd: npm run lint
+    - cmd: npm run test -- --coverage --watchAll=false
+    - cmd: npm run build
+
+# Build configurations
+builds:
+  # React library build (for npm publishing)
+  - id: react-lib
+    builder: prebuilt
+    main: "dist/index.js"
+    hooks:
+      pre: |
+        # Build library with Rollup/Vite
+        npm run build:lib
+        # Build TypeScript declarations
+        npm run build:types
+        # Build Storybook for documentation
+        npm run build:storybook || true
+    skip: false
+
+  # Standalone web app (for deployment)
+  - id: webapp
+    builder: prebuilt
+    main: "build/index.html"
+    hooks:
+      pre: |
+        npm run build:app
+    skip: false
+
+# Archive configurations
+archives:
+  # Library distribution
+  - id: npm-lib
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    wrap_in_directory: "package"
+    files:
+      - dist/**/*
+      - package.json
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+  # Web app bundle
+  - id: webapp-bundle
+    format: zip
+    name_template: "{{ .ProjectName }}-webapp-{{ .Version }}"
+    files:
+      - build/**/*
+
+  # Storybook documentation
+  - id: storybook
+    format: zip
+    name_template: "{{ .ProjectName }}-storybook-{{ .Version }}"
+    files:
+      - storybook-static/**/*
+
+# NPM publishing
+npms:
+  # Main library package
+  - name: "@{{ .Env.NPM_SCOPE }}/{{ .ProjectName }}"
+    description: My React component library
+    homepage: https://github.com/myorg/my-react-lib
+    license: MIT
+    scope: "{{ .Env.NPM_SCOPE }}"
+    access: public
+    registry: https://registry.npmjs.org
+    tag: latest
+    files:
+      - dist/
+      - README.md
+    keywords:
+      - react
+      - components
+      - ui
+      - library
+    dependencies: {}
+    extra_fields:
+      main: dist/index.js
+      module: dist/index.esm.js
+      types: dist/index.d.ts
+      sideEffects: false
+      peerDependencies:
+        react: ">=17.0.0"
+        react-dom: ">=17.0.0"
+
+  # GitHub Packages mirror
+  - name: "@myorg/my-react-lib"
+    registry: https://npm.pkg.github.com
+    access: public
+    scope: myorg
+
+# Docker for Storybook hosting
+dockers:
+  - id: storybook
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-react-lib-docs:{{ .Version }}"
+      - "ghcr.io/myorg/my-react-lib-docs:latest"
+    dockerfile: Dockerfile.storybook
+    extra_files:
+      - storybook-static/
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+      - "^style:"
+  groups:
+    - title: "✨ New Components"
+      regexp: "^feat\\(component"
+      order: 0
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 1
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 2
+    - title: "💅 Styling"
+      regexp: "^style"
+      order: 3
+    - title: "📦 Dependencies"
+      regexp: "^chore\\(deps\\)"
+      order: 4
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-react-lib
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  extra_files:
+    - glob: ./dist/*.tgz
+
+# Blob storage for assets (CDN)
+blobs:
+  - provider: s3
+    bucket: my-react-lib-cdn
+    region: us-east-1
+    folder: "{{ .Version }}"
+    ids:
+      - webapp-bundle
+      - storybook
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#frontend-releases"
+    message_template: "⚛️ {{ .ProjectName }} {{ .Tag }} is now available on npm!"
+  discord:
+    enabled: true
+    message_template: |
+      🎉 **{{ .ProjectName }} {{ .Tag }}** released!
+
+      📦 `npm install @myorg/my-react-lib@{{ .Version }}`
+      📚 Storybook: https://myorg.github.io/my-react-lib/
+
+      {{ .ReleaseURL }}
+
+# After hooks
+after:
+  hooks:
+    # Deploy Storybook to GitHub Pages
+    - cmd: npm run deploy:storybook || true
+    # Invalidate CDN cache
+    - cmd: aws cloudfront create-invalidation --distribution-id $CDN_DIST_ID --paths "/*" || true

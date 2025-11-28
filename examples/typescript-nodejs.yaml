@@ -1,0 +1,255 @@
+# Releaser Configuration for TypeScript/Node.js Projects
+# Examples: CLI tools, npm packages, React/Vue apps
+
+version: 2
+
+project_name: my-ts-cli
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - NODE_ENV=production
+  - CI=true
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-ts-cli
+  npm_scope: myorg
+
+# Before hooks - TypeScript/Node.js setup
+before:
+  hooks:
+    # Install dependencies
+    - cmd: npm ci
+    # Run linting and tests
+    - cmd: npm run lint
+    - cmd: npm run test
+    # Build TypeScript
+    - cmd: npm run build
+    # Generate types
+    - cmd: npm run build:types
+
+# Build configurations
+builds:
+  # CLI using pkg (creates native binaries from Node.js)
+  - id: cli-binaries
+    builder: prebuilt
+    main: "binaries/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        npx pkg . --targets node18-{{ .Os }}-{{ if eq .Arch "amd64" }}x64{{ else }}{{ .Arch }}{{ end }} --output binaries/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  # Bun single-file executable
+  - id: bun-binary
+    builder: prebuilt
+    main: "bundles/{{ .ProjectName }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        bun build ./src/cli.ts --compile --outfile bundles/{{ .ProjectName }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  # Deno compile
+  - id: deno-binary
+    builder: prebuilt
+    main: "deno-out/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        deno compile --allow-read --allow-write --allow-net --target {{ .Os }}-{{ .Arch }} --output deno-out/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }} src/main.ts
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+# Archive configurations
+archives:
+  - id: binaries
+    builds:
+      - cli-binaries
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+  # NPM package tarball
+  - id: npm-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    wrap_in_directory: "package"
+    files:
+      - dist/**/*
+      - package.json
+      - README.md
+      - LICENSE
+
+# NPM publishing
+npms:
+  # Main package
+  - name: "@{{ .Env.NPM_SCOPE }}/{{ .ProjectName }}"
+    description: My TypeScript CLI tool
+    homepage: https://github.com/myorg/my-ts-cli
+    license: MIT
+    scope: "{{ .Env.NPM_SCOPE }}"
+    access: public
+    registry: https://registry.npmjs.org
+    tag: latest
+    bin:
+      my-ts-cli: ./dist/cli.js
+    files:
+      - dist/
+      - README.md
+    keywords:
+      - cli
+      - typescript
+      - tool
+    dependencies:
+      commander: "^11.0.0"
+      chalk: "^5.3.0"
+
+  # GitHub Packages
+  - name: "@myorg/my-ts-cli"
+    registry: https://npm.pkg.github.com
+    access: public
+    scope: myorg
+
+# Linux packages
+nfpms:
+  - id: linux-packages
+    package_name: my-ts-cli
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-ts-cli
+    maintainer: Team <team@myorg.com>
+    description: My TypeScript CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    dependencies:
+      - nodejs >= 18
+    contents:
+      - src: ./binaries/my-ts-cli-linux-amd64
+        dst: /usr/bin/my-ts-cli
+        file_info:
+          mode: 0755
+
+# Homebrew
+brews:
+  - name: my-ts-cli
+    description: My TypeScript CLI tool
+    homepage: https://github.com/myorg/my-ts-cli
+    license: MIT
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    install: |
+      bin.install "my-ts-cli"
+    test: |
+      system "#{bin}/my-ts-cli", "--version"
+
+# Scoop (Windows)
+scoops:
+  - name: my-ts-cli
+    description: My TypeScript CLI tool
+    homepage: https://github.com/myorg/my-ts-cli
+    license: MIT
+    bucket:
+      owner: myorg
+      name: scoop-bucket
+
+# Docker images
+dockers:
+  - id: node-alpine
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-ts-cli:{{ .Version }}"
+      - "ghcr.io/myorg/my-ts-cli:latest"
+    dockerfile: Dockerfile.node
+    extra_files:
+      - package.json
+      - package-lock.json
+      - dist/
+    build_args:
+      - "NODE_VERSION=20-alpine"
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# SBOM
+sboms:
+  - artifacts: binary
+    method: syft
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+  groups:
+    - title: "✨ Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📦 Dependencies"
+      regexp: "^chore\\(deps\\)"
+      order: 2
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-ts-cli
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#nodejs-releases"
+  discord:
+    enabled: true
+  twitter:
+    enabled: false
+
+# After hooks
+after:
+  hooks:
+    - cmd: npm run docs:publish || true

@@ -1,0 +1,182 @@
+# Releaser Configuration for Vue.js Projects
+# Example: Vue component library or Nuxt application
+
+version: 2
+
+project_name: my-vue-lib
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - NODE_ENV=production
+  - CI=true
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-vue-lib
+  npm_scope: myorg
+
+# Before hooks
+before:
+  hooks:
+    - cmd: pnpm install --frozen-lockfile
+    - cmd: pnpm run lint
+    - cmd: pnpm run test:unit
+    - cmd: pnpm run build
+
+# Build configurations
+builds:
+  # Vue library build
+  - id: vue-lib
+    builder: prebuilt
+    main: "dist/my-vue-lib.es.js"
+    hooks:
+      pre: |
+        # Build with Vite
+        pnpm run build:lib
+        # Generate types
+        vue-tsc --declaration --emitDeclarationOnly
+    skip: false
+
+  # Nuxt module (if applicable)
+  - id: nuxt-module
+    builder: prebuilt
+    main: "dist/module.mjs"
+    hooks:
+      pre: pnpm run build:module
+    skip: true  # Enable if building Nuxt module
+
+# Archive configurations
+archives:
+  # Library distribution
+  - id: npm-lib
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    wrap_in_directory: "package"
+    files:
+      - dist/**/*
+      - package.json
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+  # VitePress documentation
+  - id: docs
+    format: zip
+    name_template: "{{ .ProjectName }}-docs-{{ .Version }}"
+    files:
+      - docs/.vitepress/dist/**/*
+
+# NPM publishing
+npms:
+  # Main Vue library
+  - name: "@{{ .Env.NPM_SCOPE }}/{{ .ProjectName }}"
+    description: My Vue 3 component library
+    homepage: https://github.com/myorg/my-vue-lib
+    license: MIT
+    scope: "{{ .Env.NPM_SCOPE }}"
+    access: public
+    registry: https://registry.npmjs.org
+    tag: latest
+    files:
+      - dist/
+      - README.md
+    keywords:
+      - vue
+      - vue3
+      - components
+      - ui
+    extra_fields:
+      main: dist/my-vue-lib.umd.js
+      module: dist/my-vue-lib.es.js
+      types: dist/types/index.d.ts
+      exports:
+        ".":
+          import: ./dist/my-vue-lib.es.js
+          require: ./dist/my-vue-lib.umd.js
+          types: ./dist/types/index.d.ts
+        "./style.css": ./dist/style.css
+      sideEffects:
+        - "*.css"
+      peerDependencies:
+        vue: "^3.3.0"
+
+  # Nuxt module (if applicable)
+  - name: "@myorg/nuxt-my-vue-lib"
+    description: Nuxt module for my-vue-lib
+    scope: myorg
+    access: public
+    registry: https://registry.npmjs.org
+    skip_upload: "true"  # Enable when ready
+
+# Docker for documentation
+dockers:
+  - id: docs
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-vue-lib-docs:{{ .Version }}"
+      - "ghcr.io/myorg/my-vue-lib-docs:latest"
+    dockerfile: Dockerfile.docs
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+  groups:
+    - title: "✨ New Components"
+      regexp: "^feat\\(comp"
+      order: 0
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 1
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 2
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 3
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-vue-lib
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#vue-releases"
+    message_template: "💚 {{ .ProjectName }} {{ .Tag }} released!"
+  discord:
+    enabled: true
+    message_template: |
+      🌟 **{{ .ProjectName }} {{ .Tag }}** is here!
+
+      ```bash
+      pnpm add @myorg/my-vue-lib@{{ .Version }}
+      ```
+
+      📚 Docs: https://my-vue-lib.myorg.dev
+      🔗 {{ .ReleaseURL }}
+
+# After hooks
+after:
+  hooks:
+    - cmd: pnpm run deploy:docs || true

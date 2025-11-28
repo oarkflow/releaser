@@ -1,0 +1,300 @@
+# Releaser Configuration for Java Projects
+# Examples: CLI, Spring Boot, Maven/Gradle libraries
+
+version: 2
+
+project_name: my-java-app
+
+# Distribution folder
+dist: dist
+
+# Environment variables
+env:
+  - JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+  - MAVEN_OPTS=-Xmx1024m
+
+# Template variables
+variables:
+  github_owner: myorg
+  github_repo: my-java-app
+  group_id: com.myorg
+  artifact_id: my-java-app
+
+# Before hooks - Java/Maven setup
+before:
+  hooks:
+    # Maven build
+    - cmd: mvn clean verify -DskipTests=false
+    # Or Gradle build
+    # - cmd: ./gradlew clean build
+
+# Build configurations
+builds:
+  # Fat JAR / Uber JAR
+  - id: fat-jar
+    builder: prebuilt
+    main: "target/{{ .ProjectName }}-{{ .Version }}-jar-with-dependencies.jar"
+    binary: "{{ .ProjectName }}.jar"
+    hooks:
+      pre: mvn package -DskipTests assembly:single
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Native image with GraalVM
+  - id: native
+    builder: prebuilt
+    main: "target/{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        # Build native image with GraalVM
+        mvn package -Pnative -DskipTests
+        # Or with Gradle: ./gradlew nativeCompile
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  # Spring Boot executable JAR
+  - id: spring-boot
+    builder: prebuilt
+    main: "target/{{ .ProjectName }}-{{ .Version }}.jar"
+    binary: "{{ .ProjectName }}.jar"
+    hooks:
+      pre: mvn spring-boot:repackage -DskipTests
+    skip: true  # Enable for Spring Boot projects
+
+  # jlink custom runtime image
+  - id: jlink-runtime
+    builder: prebuilt
+    main: "target/jlink-image/bin/{{ .ProjectName }}"
+    binary: "{{ .ProjectName }}"
+    hooks:
+      pre: |
+        # Create modular JAR
+        mvn package -DskipTests
+        # Create custom runtime with jlink
+        jlink --module-path target/classes:$JAVA_HOME/jmods \
+              --add-modules com.myorg.myapp \
+              --output target/jlink-image \
+              --launcher {{ .ProjectName }}=com.myorg.myapp/com.myorg.myapp.Main \
+              --compress=2 \
+              --strip-debug \
+              --no-header-files \
+              --no-man-pages
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    skip: true  # Enable for modular Java projects
+
+# Archive configurations
+archives:
+  # Native binaries
+  - id: native-binaries
+    builds:
+      - native
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+      - config/*.example.properties
+
+  # JAR distribution
+  - id: jar-dist
+    builds:
+      - fat-jar
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_java"
+    files:
+      - target/*.jar
+      - LICENSE*
+      - README*
+      - bin/run.sh
+      - bin/run.bat
+
+  # Maven repository layout
+  - id: maven-repo
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-maven"
+    files:
+      - target/*.jar
+      - target/*.pom
+      - target/*-sources.jar
+      - target/*-javadoc.jar
+
+# Linux packages
+nfpms:
+  - id: linux-packages
+    package_name: "{{ .ProjectName }}"
+    vendor: MyOrg
+    homepage: https://github.com/myorg/my-java-app
+    maintainer: Team <team@myorg.com>
+    description: My Java application
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    dependencies:
+      - java-21-openjdk-headless
+    contents:
+      - src: ./target/my-java-app
+        dst: /usr/bin/my-java-app
+        file_info:
+          mode: 0755
+      - src: ./target/my-java-app.jar
+        dst: /usr/share/my-java-app/my-java-app.jar
+      - src: ./config/application.properties.example
+        dst: /etc/my-java-app/application.properties.example
+      - src: ./systemd/my-java-app.service
+        dst: /etc/systemd/system/my-java-app.service
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+# Homebrew
+brews:
+  - name: my-java-app
+    description: My Java application
+    homepage: https://github.com/myorg/my-java-app
+    license: Apache-2.0
+    tap:
+      owner: myorg
+      name: homebrew-tap
+    dependencies:
+      - name: openjdk@21
+        type: required
+    install: |
+      libexec.install "my-java-app.jar"
+      bin.write_jar_script libexec/"my-java-app.jar", "my-java-app"
+    test: |
+      system "#{bin}/my-java-app", "--version"
+
+# Docker images
+dockers:
+  # JRE-based image
+  - id: jre
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-java-app:{{ .Version }}-jre"
+      - "ghcr.io/myorg/my-java-app:{{ .Version }}"
+      - "ghcr.io/myorg/my-java-app:latest"
+    dockerfile: Dockerfile.jre
+    extra_files:
+      - target/my-java-app.jar
+      - config/
+    build_args:
+      - "JAVA_VERSION=21-jre-alpine"
+
+  # GraalVM native image
+  - id: native-image
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/myorg/my-java-app:{{ .Version }}-native"
+    dockerfile: Dockerfile.native
+    extra_files:
+      - target/my-java-app-linux-amd64
+
+# Signing
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--output"
+      - "${signature}"
+      - "--detach-sig"
+      - "${artifact}"
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# SBOM
+sboms:
+  - artifacts: binary
+    method: syft
+
+# Changelog
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^chore\\(deps\\):"
+      - "^test:"
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "🔧 Improvements"
+      regexp: "^refactor|^perf"
+      order: 2
+    - title: "📦 Dependencies"
+      regexp: "^chore\\(deps\\)"
+      order: 3
+
+# Release
+release:
+  github:
+    owner: myorg
+    name: my-java-app
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  extra_files:
+    - glob: ./target/*.jar
+    - glob: ./target/*.pom
+
+# Maven Central publishing (via Sonatype)
+uploads:
+  - name: maven-central
+    method: PUT
+    target: https://oss.sonatype.org/service/local/staging/deploy/maven2/
+    username: "{{ .Env.SONATYPE_USERNAME }}"
+    custom_headers:
+      Authorization: "Bearer {{ .Env.SONATYPE_TOKEN }}"
+    ids:
+      - maven-repo
+
+# Announcements
+announce:
+  slack:
+    enabled: true
+    channel: "#java-releases"
+    message_template: "☕ {{ .ProjectName }} {{ .Tag }} is now available!"
+  discord:
+    enabled: true
+
+# After hooks
+after:
+  hooks:
+    # Deploy to Maven Central
+    - cmd: mvn deploy -DskipTests || true
+    # Update documentation
+    - cmd: mvn javadoc:javadoc && gh-pages -d target/site/apidocs || true
