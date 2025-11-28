@@ -1,0 +1,494 @@
+# Releaser Configuration - Cross-Platform Packaging Example
+# This example shows how to create platform-specific installers and packages
+
+version: 2
+
+project_name: myapp
+
+dist: dist
+
+# Environment variables
+env:
+  - CGO_ENABLED=0
+
+# Custom variables
+variables:
+  app_name: "My Application"
+  company: "My Company Inc."
+  identifier: com.mycompany.myapp
+  homepage: https://github.com/mycompany/myapp
+
+# Before hooks
+before:
+  hooks:
+    - cmd: go mod tidy
+
+# Build configurations
+builds:
+  - id: myapp
+    main: ./cmd/myapp
+    binary: myapp
+    builder: go
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+# Archive configurations
+archives:
+  - id: default
+    builds:
+      - myapp
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+#=============================================================================
+# LINUX PACKAGES (deb, rpm, apk, archlinux)
+#=============================================================================
+nfpms:
+  - id: linux-packages
+    package_name: "{{ .ProjectName }}"
+    vendor: "{{ .Env.COMPANY | default \"My Company\" }}"
+    homepage: "{{ .Env.HOMEPAGE }}"
+    maintainer: "Team <team@mycompany.com>"
+    description: "My awesome application"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    bindir: /usr/bin
+
+    # Package dependencies per format
+    dependencies:
+      - libc6
+
+    # Recommended packages
+    recommends:
+      - ca-certificates
+
+    # Package contents
+    contents:
+      # Main binary
+      - src: ./dist/myapp_linux_{{ .Arch }}/myapp
+        dst: /usr/bin/myapp
+        file_info:
+          mode: 0755
+
+      # Configuration file
+      - src: ./config/config.example.yaml
+        dst: /etc/myapp/config.yaml.example
+        type: config|noreplace
+
+      # Systemd service
+      - src: ./init/myapp.service
+        dst: /lib/systemd/system/myapp.service
+        type: config
+
+      # Man page
+      - src: ./docs/myapp.1
+        dst: /usr/share/man/man1/myapp.1.gz
+
+      # Shell completions
+      - src: ./completions/myapp.bash
+        dst: /usr/share/bash-completion/completions/myapp
+      - src: ./completions/myapp.zsh
+        dst: /usr/share/zsh/site-functions/_myapp
+      - src: ./completions/myapp.fish
+        dst: /usr/share/fish/vendor_completions.d/myapp.fish
+
+    # Install/remove scripts
+    scripts:
+      postinstall: ./scripts/postinstall.sh
+      preremove: ./scripts/preremove.sh
+      postremove: ./scripts/postremove.sh
+
+    # Overrides per format
+    overrides:
+      deb:
+        dependencies:
+          - libc6 (>= 2.17)
+        recommends:
+          - bash-completion
+      rpm:
+        dependencies:
+          - glibc
+        recommends:
+          - bash-completion
+
+#=============================================================================
+# MACOS APP BUNDLE
+#=============================================================================
+app_bundles:
+  - id: myapp
+    build: myapp
+    name: "My Application"
+    identifier: "{{ .Env.IDENTIFIER | default \"com.example.myapp\" }}"
+    icon: ./assets/icon.icns
+    category: public.app-category.developer-tools
+    version: "{{ .Version }}"
+
+    # High resolution support
+    high_resolution: true
+
+    # Minimum macOS version
+    min_os_version: "10.15"
+
+    # Code signing
+    sign:
+      identity: "Developer ID Application: My Company (TEAMID)"
+      entitlements: ./entitlements.plist
+      hardened: true
+      timestamp: true
+
+    # Extra files in bundle
+    extra_files:
+      - src: ./assets/icon.icns
+        dst: Resources/AppIcon.icns
+      - src: ./config/default.yaml
+        dst: Resources/default.yaml
+
+#=============================================================================
+# MACOS DMG DISK IMAGE
+#=============================================================================
+dmgs:
+  - id: myapp
+    app_bundle: myapp
+    name: "My Application"
+    format: UDZO  # UDZO (compressed), UDBZ (bzip2), ULFO (lzfse)
+
+    # DMG appearance
+    icon: ./assets/dmg-icon.icns
+    background: ./assets/dmg-background.png
+    icon_size: 128
+
+    # Window settings
+    window_width: 600
+    window_height: 400
+    window_position:
+      x: 100
+      y: 100
+
+    # Icon positions
+    icon_positions:
+      - name: "My Application.app"
+        x: 180
+        y: 170
+      - name: Applications
+        x: 420
+        y: 170
+
+    # Create Applications symlink
+    applications_symlink: true
+
+    # Extra contents
+    contents:
+      - src: ./README.md
+      - src: ./LICENSE
+
+    # Notarization
+    notarize:
+      enabled: true
+      apple_id: "developer@mycompany.com"
+      team_id: "TEAMID"
+
+#=============================================================================
+# WINDOWS MSI INSTALLER
+#=============================================================================
+msis:
+  - id: myapp
+    build: myapp
+    name: "My Application"
+    product_name: "My Application"
+    short_description: "My awesome application"
+    manufacturer: "My Company Inc."
+
+    # Unique upgrade code (generate once, never change)
+    upgrade_code: "12345678-1234-1234-1234-123456789012"
+
+    # Version info
+    product_version: "{{ .Version }}"
+
+    # Icons
+    icon: ./assets/icon.ico
+    banner: ./assets/msi-banner.bmp
+    dialog: ./assets/msi-dialog.bmp
+
+    # Installation directory
+    install_dir: "ProgramFiles\\My Company\\My Application"
+
+    # Per-user or per-machine installation
+    install_scope: perMachine
+
+    # Start menu shortcuts
+    shortcuts:
+      - name: "My Application"
+        description: "Launch My Application"
+        target: "[INSTALLDIR]myapp.exe"
+        icon: "[INSTALLDIR]myapp.exe"
+        working_dir: "[INSTALLDIR]"
+
+    # Registry entries
+    registry:
+      - root: HKLM
+        key: "Software\\MyCompany\\MyApp"
+        values:
+          - name: Version
+            value: "{{ .Version }}"
+          - name: InstallPath
+            value: "[INSTALLDIR]"
+
+    # Features for selective installation
+    features:
+      - id: MainProgram
+        title: "Main Application"
+        description: "Core application files"
+        default: true
+      - id: Documentation
+        title: "Documentation"
+        description: "Help files and documentation"
+        default: true
+
+    # WiX extensions
+    extensions:
+      - WixUIExtension
+      - WixUtilExtension
+
+    # Custom WiX source (optional)
+    # wxs: ./installer/myapp.wxs
+
+#=============================================================================
+# WINDOWS NSIS INSTALLER
+#=============================================================================
+nsiss:
+  - id: myapp
+    build: myapp
+    name: "My Application"
+    installer: "myapp-setup"
+
+    # Installer info
+    company: "My Company Inc."
+    product_name: "My Application"
+    version: "{{ .Version }}"
+
+    # Icons
+    icon: ./assets/icon.ico
+    uninstaller_icon: ./assets/uninstall.ico
+    header_image: ./assets/nsis-header.bmp
+    sidebar_image: ./assets/nsis-sidebar.bmp
+
+    # Installation directory
+    install_dir: "$PROGRAMFILES\\My Company\\My Application"
+
+    # License
+    license_file: ./LICENSE
+
+    # Installer pages
+    pages:
+      - welcome
+      - license
+      - directory
+      - instfiles
+      - finish
+
+    # Extra files to include
+    extra_files:
+      - src: ./README.md
+        dst: "$INSTDIR\\README.txt"
+      - src: ./config/default.yaml
+        dst: "$INSTDIR\\config\\default.yaml"
+
+    # Start menu
+    start_menu:
+      folder: "My Application"
+      shortcuts:
+        - name: "My Application"
+          target: "$INSTDIR\\myapp.exe"
+        - name: "Uninstall"
+          target: "$INSTDIR\\Uninstall.exe"
+
+    # Desktop shortcut
+    desktop_shortcut: true
+
+    # Add to PATH
+    add_to_path: true
+
+    # Request admin privileges
+    request_execution_level: admin
+
+    # Custom defines
+    defines:
+      PRODUCT_WEB_SITE: "https://mycompany.com"
+      PRODUCT_SUPPORT: "support@mycompany.com"
+
+    # Custom NSIS script (optional)
+    # script: ./installer/myapp.nsi
+
+#=============================================================================
+# DOCKER IMAGES
+#=============================================================================
+dockers:
+  - id: alpine
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/mycompany/myapp:{{ .Version }}"
+      - "ghcr.io/mycompany/myapp:latest"
+    dockerfile: Dockerfile
+    extra_files:
+      - config/
+    build_args:
+      - "VERSION={{ .Version }}"
+
+#=============================================================================
+# HOMEBREW (macOS/Linux)
+#=============================================================================
+brews:
+  - name: myapp
+    description: "My awesome application"
+    homepage: "https://github.com/mycompany/myapp"
+    license: MIT
+    tap:
+      owner: mycompany
+      name: homebrew-tap
+    dependencies:
+      - name: go
+        type: optional
+    install: |
+      bin.install "myapp"
+      bash_completion.install "completions/myapp.bash" => "myapp"
+      zsh_completion.install "completions/myapp.zsh" => "_myapp"
+      fish_completion.install "completions/myapp.fish"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+#=============================================================================
+# SCOOP (Windows)
+#=============================================================================
+scoops:
+  - bucket:
+      owner: mycompany
+      name: scoop-bucket
+    homepage: "https://github.com/mycompany/myapp"
+    description: "My awesome application"
+    license: MIT
+
+    # Post-install script
+    post_install:
+      - "Write-Host 'Installation complete!'"
+
+    # Shim settings
+    bin:
+      - myapp.exe
+
+#=============================================================================
+# SNAPCRAFT (Linux)
+#=============================================================================
+snapcrafts:
+  - name: myapp
+    summary: "My awesome application"
+    description: |
+      A comprehensive CLI tool that does amazing things.
+
+      Features:
+      - Feature 1
+      - Feature 2
+    license: MIT
+    grade: stable
+    confinement: strict
+
+    # Supported architectures
+    architectures:
+      - amd64
+      - arm64
+
+    # Apps exposed by the snap
+    apps:
+      myapp:
+        command: myapp
+        plugs:
+          - home
+          - network
+          - network-bind
+
+    # Parts to build
+    parts:
+      myapp:
+        plugin: dump
+        source: .
+        stage-packages:
+          - libc6
+
+#=============================================================================
+# CHECKSUMS & SIGNING
+#=============================================================================
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
+#=============================================================================
+# CHANGELOG
+#=============================================================================
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 2
+
+#=============================================================================
+# RELEASE
+#=============================================================================
+release:
+  github:
+    owner: mycompany
+    name: myapp
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+
+#=============================================================================
+# ANNOUNCEMENTS
+#=============================================================================
+announce:
+  slack:
+    enabled: true
+    channel: "#releases"
+    message_template: "🎉 {{ .ProjectName }} {{ .Tag }} released!"

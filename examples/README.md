@@ -16,6 +16,7 @@ This directory contains sample Releaser configuration files for various programm
 | [java-project.yaml](java-project.yaml) | Java/Spring Boot | Java with Maven/Gradle, Docker, GraalVM native-image |
 | [scala-project.yaml](scala-project.yaml) | Scala | Scala with sbt, native images, Spark support |
 | [kotlin-project.yaml](kotlin-project.yaml) | Kotlin | Kotlin with Gradle, GraalVM, multiplatform support |
+| [cross-platform-packaging.yaml](cross-platform-packaging.yaml) | Multi-Platform | Complete OS packaging: macOS DMG/App, Windows MSI/NSIS, Linux deb/rpm |
 
 ## Usage
 
@@ -100,6 +101,13 @@ To use any of these examples as a starting point for your project:
 - GraalVM native-image
 - Kotlin/Native multiplatform
 - Spring Boot integration
+
+### Cross-Platform Packaging
+- **macOS**: App bundles (.app) and DMG disk images with background, icons, volume name
+- **Windows**: MSI installers (via WiX) and NSIS installers with shortcuts, registry
+- **Linux**: deb, rpm, apk packages via nfpm with systemd services, config files
+- Architecture support: amd64, arm64
+- Code signing for all platforms (Apple notarization, Windows Authenticode, GPG)
 
 ## Common Features
 

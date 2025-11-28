@@ -24,6 +24,7 @@ import (
 	"github.com/oarkflow/releaser/internal/docker"
 	"github.com/oarkflow/releaser/internal/git"
 	"github.com/oarkflow/releaser/internal/nfpm"
+	"github.com/oarkflow/releaser/internal/packaging"
 	"github.com/oarkflow/releaser/internal/publish"
 	"github.com/oarkflow/releaser/internal/sign"
 	"github.com/oarkflow/releaser/internal/tmpl"
@@ -137,6 +138,11 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
 	// Create packages (nfpm, snapcraft, etc.)
 	if err := p.packages(ctx); err != nil {
+		return err
+	}
+
+	// Create platform-specific packages (macOS, Windows)
+	if err := p.platformPackages(ctx); err != nil {
 		return err
 	}
 
@@ -645,6 +651,41 @@ func (p *Pipeline) packages(ctx context.Context) error {
 	// Create nfpm packager
 	packager := nfpm.NewMultiPackager(p.config.NFPMs, p.templateCtx, p.artifacts, p.distDir)
 	return packager.BuildAll(ctx)
+}
+
+// platformPackages creates platform-specific packages (macOS App Bundle/DMG, Windows MSI/NSIS)
+func (p *Pipeline) platformPackages(ctx context.Context) error {
+	log.Info("Creating platform-specific packages")
+
+	// Build macOS App Bundles
+	if len(p.config.AppBundles) > 0 {
+		if err := packaging.BuildAllAppBundles(ctx, p.config.AppBundles, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build App Bundles: %w", err)
+		}
+	}
+
+	// Build macOS DMG images
+	if len(p.config.DMGs) > 0 {
+		if err := packaging.BuildAllDMGs(ctx, p.config.DMGs, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build DMGs: %w", err)
+		}
+	}
+
+	// Build Windows MSI installers
+	if len(p.config.MSIs) > 0 {
+		if err := packaging.BuildAllMSIs(ctx, p.config.MSIs, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build MSIs: %w", err)
+		}
+	}
+
+	// Build Windows NSIS installers
+	if len(p.config.NSISs) > 0 {
+		if err := packaging.BuildAllNSIS(ctx, p.config.NSISs, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build NSIS installers: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // checksum creates checksums

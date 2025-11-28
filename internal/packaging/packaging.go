@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"text/template"
 
 	"github.com/charmbracelet/log"
@@ -205,6 +206,15 @@ func NewDMGBuilder(cfg config.DMG, tmplCtx *tmpl.Context, manager *artifact.Mana
 
 // Build creates a DMG disk image.
 func (b *DMGBuilder) Build(ctx context.Context) error {
+	// DMG creation requires macOS with hdiutil
+	if runtime.GOOS != "darwin" {
+		// Check if hdiutil is available (might be running via cross-compilation tools)
+		if _, err := exec.LookPath("hdiutil"); err != nil {
+			log.Warn("Skipping DMG creation: hdiutil is only available on macOS")
+			return nil
+		}
+	}
+
 	log.Info("Building DMG disk image")
 
 	// Get app bundles
@@ -317,6 +327,20 @@ func NewMSIBuilder(cfg config.MSI, tmplCtx *tmpl.Context, manager *artifact.Mana
 
 // Build creates an MSI installer.
 func (b *MSIBuilder) Build(ctx context.Context) error {
+	// Check if MSI tools are available (wixl on Linux or WiX on Windows)
+	hasWixl := false
+	hasWix := false
+	if _, err := exec.LookPath("wixl"); err == nil {
+		hasWixl = true
+	}
+	if _, err := exec.LookPath("candle"); err == nil {
+		hasWix = true
+	}
+	if !hasWixl && !hasWix {
+		log.Warn("Skipping MSI creation: neither wixl (msitools) nor WiX Toolset found")
+		return nil
+	}
+
 	log.Info("Building MSI installer")
 
 	// Get windows binaries
@@ -489,6 +513,12 @@ func NewNSISBuilder(cfg config.NSIS, tmplCtx *tmpl.Context, manager *artifact.Ma
 
 // Build creates an NSIS installer.
 func (b *NSISBuilder) Build(ctx context.Context) error {
+	// Check if makensis is available
+	if _, err := exec.LookPath("makensis"); err != nil {
+		log.Warn("Skipping NSIS creation: makensis not found (install NSIS)")
+		return nil
+	}
+
 	log.Info("Building NSIS installer")
 
 	// Get windows binaries

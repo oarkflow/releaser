@@ -640,6 +640,238 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0755)
 }
 
+// JavaBuilder builds Java projects (Maven/Gradle)
+type JavaBuilder struct{}
+
+// NewJavaBuilder creates a new Java builder
+func NewJavaBuilder() *JavaBuilder {
+	return &JavaBuilder{}
+}
+
+// Supports returns true if this builder supports the given builder type
+func (b *JavaBuilder) Supports(builder string) bool {
+	return builder == "java" || builder == "maven" || builder == "mvn" || builder == "gradle"
+}
+
+// Build builds a Java project
+func (b *JavaBuilder) Build(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context) error {
+	log.Debug("Building Java project", "target", target.String(), "output", output)
+
+	// Prepare environment
+	env := os.Environ()
+	for _, e := range build.Env {
+		expanded, err := tmplCtx.Apply(e)
+		if err != nil {
+			return fmt.Errorf("failed to expand env %s: %w", e, err)
+		}
+		env = append(env, expanded)
+	}
+
+	// Determine working directory
+	dir := build.Dir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+
+	// Detect build tool
+	buildTool := build.Builder
+	if buildTool == "java" {
+		// Auto-detect
+		if _, err := os.Stat(filepath.Join(dir, "pom.xml")); err == nil {
+			buildTool = "maven"
+		} else if _, err := os.Stat(filepath.Join(dir, "build.gradle")); err == nil {
+			buildTool = "gradle"
+		} else if _, err := os.Stat(filepath.Join(dir, "build.gradle.kts")); err == nil {
+			buildTool = "gradle"
+		}
+	}
+
+	var cmd *exec.Cmd
+	switch buildTool {
+	case "maven", "mvn":
+		args := []string{"package", "-DskipTests"}
+		for _, flag := range build.Flags {
+			expanded, _ := tmplCtx.Apply(flag)
+			args = append(args, expanded)
+		}
+		cmd = exec.CommandContext(ctx, "mvn", args...)
+	case "gradle":
+		args := []string{"build", "-x", "test"}
+		for _, flag := range build.Flags {
+			expanded, _ := tmplCtx.Apply(flag)
+			args = append(args, expanded)
+		}
+		// Use wrapper if available
+		if _, err := os.Stat(filepath.Join(dir, "gradlew")); err == nil {
+			cmd = exec.CommandContext(ctx, "./gradlew", args...)
+		} else {
+			cmd = exec.CommandContext(ctx, "gradle", args...)
+		}
+	default:
+		return fmt.Errorf("unknown Java build tool: %s", buildTool)
+	}
+
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("Java build failed: %w", err)
+	}
+
+	// Copy JAR to output location
+	jarPath := build.Main
+	if jarPath == "" {
+		// Try to find the JAR
+		if buildTool == "maven" || buildTool == "mvn" {
+			jarPath = "target/*.jar"
+		} else {
+			jarPath = "build/libs/*.jar"
+		}
+	}
+
+	// Expand glob
+	matches, err := filepath.Glob(filepath.Join(dir, jarPath))
+	if err != nil {
+		return fmt.Errorf("failed to find JAR: %w", err)
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("no JAR found matching %s", jarPath)
+	}
+
+	// Copy the first match (usually the main JAR)
+	for _, match := range matches {
+		if strings.Contains(match, "-sources") || strings.Contains(match, "-javadoc") {
+			continue
+		}
+		if err := copyFile(match, output); err != nil {
+			return fmt.Errorf("failed to copy JAR: %w", err)
+		}
+		break
+	}
+
+	log.Info("Built JAR", "output", output)
+	return nil
+}
+
+// PHPBuilder builds PHP projects (Composer/Phar)
+type PHPBuilder struct{}
+
+// NewPHPBuilder creates a new PHP builder
+func NewPHPBuilder() *PHPBuilder {
+	return &PHPBuilder{}
+}
+
+// Supports returns true if this builder supports the given builder type
+func (b *PHPBuilder) Supports(builder string) bool {
+	return builder == "php" || builder == "composer" || builder == "phar"
+}
+
+// Build builds a PHP project
+func (b *PHPBuilder) Build(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context) error {
+	log.Debug("Building PHP project", "target", target.String(), "output", output)
+
+	// Prepare environment
+	env := os.Environ()
+	for _, e := range build.Env {
+		expanded, err := tmplCtx.Apply(e)
+		if err != nil {
+			return fmt.Errorf("failed to expand env %s: %w", e, err)
+		}
+		env = append(env, expanded)
+	}
+
+	// Determine working directory
+	dir := build.Dir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+
+	// Install dependencies
+	installCmd := exec.CommandContext(ctx, "composer", "install", "--no-dev", "--optimize-autoloader")
+	installCmd.Dir = dir
+	installCmd.Env = env
+	installCmd.Stdout = os.Stdout
+	installCmd.Stderr = os.Stderr
+	if err := installCmd.Run(); err != nil {
+		log.Warn("Composer install failed, continuing anyway", "error", err)
+	}
+
+	// Build Phar if configured
+	if build.Builder == "phar" || strings.HasSuffix(output, ".phar") {
+		// Check if box is available
+		boxPath := "box"
+		if _, err := exec.LookPath("box"); err != nil {
+			// Try php box.phar
+			boxPath = "php"
+		}
+
+		var cmd *exec.Cmd
+		if boxPath == "box" {
+			cmd = exec.CommandContext(ctx, "box", "compile")
+		} else {
+			// Use humbug/box or custom phar builder
+			cmd = exec.CommandContext(ctx, "php", "-d", "phar.readonly=0", "box.phar", "compile")
+		}
+		cmd.Dir = dir
+		cmd.Env = env
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			// Fallback: create phar manually using PHP script
+			log.Debug("Box not available, using manual phar creation")
+			if err := b.createPharManually(ctx, dir, output, env); err != nil {
+				return fmt.Errorf("failed to create Phar: %w", err)
+			}
+		} else {
+			// Copy phar to output
+			pharPath := build.Main
+			if pharPath == "" {
+				pharPath = filepath.Base(dir) + ".phar"
+			}
+			if err := copyFile(filepath.Join(dir, pharPath), output); err != nil {
+				return fmt.Errorf("failed to copy Phar: %w", err)
+			}
+		}
+	} else {
+		// Just copy the source
+		if err := copyFile(build.Main, output); err != nil {
+			return fmt.Errorf("failed to copy PHP source: %w", err)
+		}
+	}
+
+	log.Info("Built PHP project", "output", output)
+	return nil
+}
+
+// createPharManually creates a Phar archive using PHP
+func (b *PHPBuilder) createPharManually(ctx context.Context, dir, output string, env []string) error {
+	pharScript := `<?php
+$phar = new Phar($argv[1], 0, basename($argv[1]));
+$phar->buildFromDirectory($argv[2]);
+$phar->setDefaultStub('index.php');
+$phar->compressFiles(Phar::GZ);
+echo "Phar created: " . $argv[1] . "\n";
+`
+
+	// Create temp script
+	scriptPath := filepath.Join(dir, ".create-phar.php")
+	if err := os.WriteFile(scriptPath, []byte(pharScript), 0644); err != nil {
+		return err
+	}
+	defer os.Remove(scriptPath)
+
+	cmd := exec.CommandContext(ctx, "php", "-d", "phar.readonly=0", scriptPath, output, dir)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
 // GetBuilder returns the appropriate builder for a build configuration
 func GetBuilder(builderType string) Builder {
 	builders := []Builder{
@@ -647,6 +879,8 @@ func GetBuilder(builderType string) Builder {
 		NewRustBuilder(),
 		NewNodeBuilder(),
 		NewPythonBuilder(),
+		NewJavaBuilder(),
+		NewPHPBuilder(),
 		NewPrebuiltBuilder(),
 	}
 

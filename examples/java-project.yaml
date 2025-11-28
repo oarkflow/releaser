@@ -171,6 +171,149 @@ nfpms:
       postinstall: scripts/postinstall.sh
       preremove: scripts/preremove.sh
 
+# macOS App Bundles
+app_bundles:
+  - id: macos-app
+    builds:
+      - native
+    name: My Java App
+    bundle_id: com.myorg.myjavaapp
+    icon: assets/icon.icns
+    info_plist:
+      CFBundleShortVersionString: "{{ .Version }}"
+      CFBundleVersion: "{{ .Version }}"
+      NSHighResolutionCapable: true
+      LSMinimumSystemVersion: "10.15"
+      CFBundleDocumentTypes: []
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    sign:
+      identity: "Developer ID Application: MyOrg (XXXXXXXXXX)"
+      entitlements: assets/entitlements.plist
+      notarize:
+        enabled: true
+        apple_id: "{{ .Env.APPLE_ID }}"
+        team_id: "{{ .Env.APPLE_TEAM_ID }}"
+        password: "{{ .Env.APPLE_APP_PASSWORD }}"
+    extra_files:
+      - src: README.md
+        dst: Contents/Resources/README.md
+      - src: config/application.properties.example
+        dst: Contents/Resources/config/application.properties.example
+
+# macOS DMG Disk Images
+dmgs:
+  - id: macos-dmg
+    name: "{{ .ProjectName }}-{{ .Version }}"
+    app_bundles:
+      - macos-app
+    background: assets/dmg-background.png
+    icon: assets/dmg-icon.icns
+    volume_name: "My Java App {{ .Version }}"
+    icon_size: 80
+    window:
+      width: 540
+      height: 380
+    contents:
+      - x: 140
+        y: 200
+        type: app
+      - x: 400
+        y: 200
+        type: link
+        path: /Applications
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+# Windows MSI Installers
+msis:
+  - id: windows-msi
+    builds:
+      - native
+    name: "{{ .ProjectName }}"
+    product_name: My Java App
+    manufacturer: MyOrg
+    upgrade_code: "12345678-1234-1234-1234-123456789012"
+    version: "{{ .Version }}"
+    icon: assets/icon.ico
+    banner: assets/msi-banner.bmp
+    dialog: assets/msi-dialog.bmp
+    license: LICENSE.rtf
+    install_dir: "ProgramFiles64Folder\\MyOrg\\MyJavaApp"
+    shortcuts:
+      - name: My Java App
+        target: "[INSTALLDIR]my-java-app.exe"
+        icon: "[INSTALLDIR]icon.ico"
+        desktop: true
+        start_menu: true
+    environment:
+      - name: PATH
+        value: "[INSTALLDIR]"
+        action: set
+        part: last
+        system: true
+    goos:
+      - windows
+    goarch:
+      - amd64
+    sign:
+      certificate: "{{ .Env.WINDOWS_CERT_PATH }}"
+      password: "{{ .Env.WINDOWS_CERT_PASSWORD }}"
+      timestamp_server: "http://timestamp.digicert.com"
+
+# Windows NSIS Installers
+nsiss:
+  - id: windows-nsis
+    builds:
+      - native
+    name: "{{ .ProjectName }}-{{ .Version }}-setup"
+    product_name: My Java App
+    manufacturer: MyOrg
+    version: "{{ .Version }}"
+    icon: assets/icon.ico
+    header_image: assets/nsis-header.bmp
+    wizard_image: assets/nsis-wizard.bmp
+    license: LICENSE.txt
+    install_dir: "$PROGRAMFILES64\\MyOrg\\MyJavaApp"
+    shortcuts:
+      - name: My Java App
+        target: "$INSTDIR\\my-java-app.exe"
+        icon: "$INSTDIR\\icon.ico"
+        desktop: true
+        start_menu: true
+    registry:
+      - root: HKLM
+        key: "Software\\MyOrg\\MyJavaApp"
+        values:
+          - name: InstallPath
+            type: REG_SZ
+            value: "$INSTDIR"
+          - name: Version
+            type: REG_SZ
+            value: "{{ .Version }}"
+    uninstaller:
+      name: uninstall.exe
+      path: "$INSTDIR\\uninstall.exe"
+    extra_files:
+      - src: README.md
+        dst: README.txt
+      - src: config/application.properties.example
+        dst: config/application.properties.example
+    goos:
+      - windows
+    goarch:
+      - amd64
+    sign:
+      certificate: "{{ .Env.WINDOWS_CERT_PATH }}"
+      password: "{{ .Env.WINDOWS_CERT_PASSWORD }}"
+      timestamp_server: "http://timestamp.digicert.com"
+
 # Homebrew
 brews:
   - name: my-java-app
