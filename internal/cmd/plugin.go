@@ -265,7 +265,7 @@ func (p *%sPlugin) Publish(ctx context.Context, artifacts []Artifact, cfg map[st
 
 	return nil
 }
-`, name, name, name, name, name, name, name, name)
+`, name, name, name, name, name, name, name, name, name)
 }
 
 func hookTemplate(name string) string {
@@ -295,5 +295,5 @@ func (p *%sPlugin) Execute(ctx context.Context, event string, data map[string]in
 
 	return nil
 }
-`, name, name, name, name, name, name, name)
+`, name, name, name, name, name, name, name, name, name)
 }

@@ -92,9 +92,9 @@ func (b *Builder) Build(ctx context.Context) error {
 	args = append(args, "-f", dockerfile)
 
 	// Add build args
-	for key, value := range b.config.BuildArgs {
-		expandedValue, _ := b.tmplCtx.Apply(value)
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", key, expandedValue))
+	for _, arg := range b.config.BuildArgs {
+		expandedArg, _ := b.tmplCtx.Apply(arg)
+		args = append(args, "--build-arg", expandedArg)
 	}
 
 	// Add extra files if needed

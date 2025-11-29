@@ -1,0 +1,34 @@
+[Unit]
+Description=GoFiber API Server
+Documentation=https://github.com/user/gofiber-api
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gofiber-api
+Group=gofiber-api
+ExecStart=/usr/bin/gofiber-api --config /etc/gofiber-api/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/log/gofiber-api
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gofiber-api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,79 @@
+# Minimal Releaser configuration for testing builds
+version: 2
+
+project_name: releaser
+
+dist: dist
+
+env:
+  - CGO_ENABLED=0
+  - GO111MODULE=on
+
+before:
+  hooks:
+    - cmd: go mod tidy
+
+builds:
+  - id: releaser
+    main: ./cmd/releaser
+    binary: releaser
+    lang: go
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: default
+    builds:
+      - releaser
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE*
+      - README*
+      - examples/**/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Version }}-SNAPSHOT-{{.ShortCommit}}"
+
+changelog:
+  sort: asc
+  use: conventional
+  groups:
+    - title: "Features"
+      regexp: "^feat"
+      order: 0
+    - title: "Bug Fixes"
+      regexp: "^fix"
+      order: 1
+
+release:
+  github:
+    owner: oarkflow
+    name: releaser
+  draft: true
+  prerelease: auto

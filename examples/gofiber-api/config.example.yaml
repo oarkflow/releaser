@@ -1,0 +1,18 @@
+# GoFiber API Configuration
+# This file can be placed at:
+#   - ./config.yaml (current directory)
+#   - /etc/gofiber-api/config.yaml
+#   - ~/.config/gofiber-api/config.yaml
+
+server:
+  host: "0.0.0.0"
+  port: 3000
+  cors_origins: "*"
+
+database:
+  driver: "memory"  # Currently only memory is supported
+  dsn: ""
+
+logging:
+  level: "info"     # debug, info, warn, error
+  format: "text"    # text or json

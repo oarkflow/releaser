@@ -1,10 +1,8 @@
-# Releaser Configuration Example
-# This is a comprehensive example showing all available options
-
+# Releaser Configuration for the Releaser project itself
 version: 2
 
 # Project name used in filenames and templates
-project_name: myapp
+project_name: releaser
 
 # Distribution folder (default: dist)
 dist: dist
@@ -23,14 +21,12 @@ env:
 before:
   hooks:
     - cmd: go mod tidy
-    - cmd: go generate ./...
 
 # Build configurations
 builds:
-  # Go build
-  - id: myapp
-    main: ./cmd/myapp
-    binary: myapp
+  - id: releaser
+    main: ./cmd/releaser
+    binary: releaser
     lang: go
     goos:
       - linux
@@ -39,15 +35,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    goarm:
-      - "6"
-      - "7"
-    goamd64:
-      - v1
-      - v3
     ignore:
-      - goos: darwin
-        goarch: "386"
       - goos: windows
         goarch: arm64
     ldflags:
@@ -59,44 +47,22 @@ builds:
       - -trimpath
     env:
       - CGO_ENABLED=0
-    hooks:
-      pre: echo "Building {{.Target}}"
-      post: echo "Built {{.Target}}"
-
-  # Rust build example
-  - id: myapp-rust
-    lang: rust
-    dir: ./rust-component
-    binary: myapp-rust
-    targets:
-      - x86_64-unknown-linux-gnu
-      - x86_64-apple-darwin
-      - x86_64-pc-windows-msvc
-
-  # Node.js build example
-  - id: myapp-node
-    lang: nodejs
-    dir: ./node-component
-    hooks:
-      pre: npm install
 
 # Archive configurations
 archives:
   - id: default
     builds:
-      - myapp
+      - releaser
     format: tar.gz
     format_overrides:
       - goos: windows
         format: zip
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     wrap_in_directory: true
     files:
       - LICENSE*
       - README*
-      - CHANGELOG*
-      - src: docs/*
-        dst: docs
+      - examples/**/*
 
 # Checksum configuration
 checksum:
@@ -146,14 +112,14 @@ changelog:
 # Release configuration
 release:
   github:
-    owner: myorg
-    name: myrepo
-  draft: false
+    owner: oarkflow
+    name: releaser
+  draft: true
   prerelease: auto
   name_template: "{{.ProjectName}} v{{.Version}}"
   header: |
     ## What's Changed
-    
+
     This release includes various improvements and bug fixes.
   footer: |
     **Full Changelog**: https://github.com/{{.Env.GITHUB_OWNER}}/{{.Env.GITHUB_REPO}}/compare/{{.PreviousTag}}...{{.Tag}}
@@ -342,9 +308,9 @@ announce:
     icon_emoji: ":rocket:"
     message_template: |
       🚀 *{{ .ProjectName }}* {{ .Version }} has been released!
-      
+
       {{ .Changelog }}
-      
+
       <{{ .ReleaseURL }}|View Release>
 
   discord:
@@ -352,9 +318,9 @@ announce:
     author: Release Bot
     message_template: |
       🚀 **{{ .ProjectName }}** {{ .Version }} has been released!
-      
+
       {{ .Changelog }}
-      
+
       [View Release]({{ .ReleaseURL }})
 
   telegram:
@@ -363,9 +329,9 @@ announce:
     parse_mode: Markdown
     message_template: |
       🚀 *{{ .ProjectName }}* {{ .Version }} has been released!
-      
+
       {{ .Changelog }}
-      
+
       [View Release]({{ .ReleaseURL }})
 
   webhook:

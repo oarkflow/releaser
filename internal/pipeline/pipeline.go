@@ -109,6 +109,52 @@ func New(ctx context.Context, opts ReleaseOptions) (*Pipeline, error) {
 func (p *Pipeline) Run(ctx context.Context) error {
 	log.Info("Starting release pipeline", "project", p.config.ProjectName)
 
+	// Run before hooks
+	if err := p.runHooks(ctx, p.config.Before, "before"); err != nil {
+		return err
+	}
+
+	// Build all artifacts (binaries, archives, packages, checksums, docker)
+	if err := p.BuildAll(ctx); err != nil {
+		return err
+	}
+
+	// If prepare mode, stop here
+	if p.options.Prepare {
+		if err := p.saveState(); err != nil {
+			return err
+		}
+		log.Info("Release prepared. Use 'releaser publish' and 'releaser announce' to continue.")
+		return nil
+	}
+
+	// Publish artifacts
+	if !p.options.SkipPublish {
+		if err := p.Publish(ctx); err != nil {
+			return err
+		}
+	}
+
+	// Announce release
+	if !p.options.SkipAnnounce {
+		if err := p.Announce(ctx); err != nil {
+			return err
+		}
+	}
+
+	// Run after hooks
+	if err := p.runHooks(ctx, p.config.After, "after"); err != nil {
+		return err
+	}
+
+	elapsed := time.Since(p.startTime)
+	log.Info("Release completed successfully", "duration", elapsed.Round(time.Second))
+
+	return nil
+}
+
+// BuildAll builds all artifacts including archives, packages, checksums, and docker images
+func (p *Pipeline) BuildAll(ctx context.Context) error {
 	// Clean dist directory if requested
 	if p.options.Clean {
 		if err := p.clean(); err != nil {
@@ -119,11 +165,6 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	// Create dist directory
 	if err := os.MkdirAll(p.distDir, 0755); err != nil {
 		return fmt.Errorf("failed to create dist directory: %w", err)
-	}
-
-	// Run before hooks
-	if err := p.runHooks(ctx, p.config.Before, "before"); err != nil {
-		return err
 	}
 
 	// Build artifacts
@@ -164,37 +205,6 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			return err
 		}
 	}
-
-	// If prepare mode, stop here
-	if p.options.Prepare {
-		if err := p.saveState(); err != nil {
-			return err
-		}
-		log.Info("Release prepared. Use 'releaser publish' and 'releaser announce' to continue.")
-		return nil
-	}
-
-	// Publish artifacts
-	if !p.options.SkipPublish {
-		if err := p.Publish(ctx); err != nil {
-			return err
-		}
-	}
-
-	// Announce release
-	if !p.options.SkipAnnounce {
-		if err := p.Announce(ctx); err != nil {
-			return err
-		}
-	}
-
-	// Run after hooks
-	if err := p.runHooks(ctx, p.config.After, "after"); err != nil {
-		return err
-	}
-
-	elapsed := time.Since(p.startTime)
-	log.Info("Release completed successfully", "duration", elapsed.Round(time.Second))
 
 	return nil
 }

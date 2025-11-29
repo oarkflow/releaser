@@ -1,0 +1,51 @@
+stages:
+  - test
+  - build
+  - release
+
+variables:
+  GO_VERSION: "1.22"
+
+.go-cache:
+  variables:
+    GOPATH: $CI_PROJECT_DIR/.go
+  cache:
+    paths:
+      - .go/pkg/mod/
+
+test:
+  stage: test
+  image: golang:${GO_VERSION}
+  extends: .go-cache
+  script:
+    - go test ./...
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
+
+build:snapshot:
+  stage: build
+  image: golang:${GO_VERSION}
+  extends: .go-cache
+  script:
+    - releaser build --snapshot
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 day
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+release:
+  stage: release
+  image: golang:${GO_VERSION}
+  extends: .go-cache
+  script:
+    - releaser release
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG
+

@@ -1,0 +1,217 @@
+# GoFiber API Server - Releaser Configuration
+# A complete example of a Go web application with REST endpoints
+
+version: 2
+
+project_name: gofiber-api
+
+defaults:
+  homepage: https://github.com/user/gofiber-api
+  description: A REST API server built with GoFiber
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - CGO_ENABLED=0
+  - GO111MODULE=on
+
+variables:
+  owner: user
+  repo: gofiber-api
+
+before:
+  hooks:
+    - cmd: go mod tidy
+    - cmd: go generate ./...
+    - cmd: go test ./...
+
+builds:
+  - id: api-server
+    main: ./cmd/server
+    binary: gofiber-api
+    lang: go
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=releaser
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: default
+    builds:
+      - api-server
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE*
+      - README*
+      - config.example.yaml
+      - migrations/**/*
+
+nfpms:
+  - id: api-packages
+    package_name: gofiber-api
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A REST API server built with GoFiber
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    contents:
+      - src: ./config.example.yaml
+        dst: /etc/gofiber-api/config.yaml
+        type: config|noreplace
+      - src: ./scripts/gofiber-api.service
+        dst: /etc/systemd/system/gofiber-api.service
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+dockers:
+  - id: api-docker
+    ids:
+      - api-server
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    build_flag_templates:
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--platform=linux/amd64"
+
+  - id: api-docker-arm64
+    ids:
+      - api-server
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - id: api-manifest
+    name_template: "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-arm64"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: spdx
+    artifacts: archive
+    documents:
+      - spdx-json
+
+signs:
+  - id: checksums
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  sort: asc
+  use: conventional
+  groups:
+    - title: "🚀 Features"
+      regexp: "^feat"
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: "^fix"
+      order: 1
+    - title: "📚 Documentation"
+      regexp: "^docs"
+      order: 2
+    - title: "⚡ Performance"
+      regexp: "^perf"
+      order: 3
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"
+
+brews:
+  - name: gofiber-api
+    repository:
+      owner: user
+      name: homebrew-tap
+    folder: Formula
+    homepage: https://github.com/user/gofiber-api
+    description: A REST API server built with GoFiber
+    license: MIT
+    test: |
+      system "#{bin}/gofiber-api", "--version"
+    install: |
+      bin.install "gofiber-api"
+
+scoops:
+  - repository:
+      owner: user
+      name: scoop-bucket
+    homepage: https://github.com/user/gofiber-api
+    description: A REST API server built with GoFiber
+    license: MIT
+
+aurs:
+  - name: gofiber-api
+    homepage: https://github.com/user/gofiber-api
+    description: A REST API server built with GoFiber
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/gofiber-api.git
+    package: |
+      install -Dm755 gofiber-api "$pkgdir/usr/bin/gofiber-api"
+
+announce:
+  slack:
+    enabled: false
+    channel: "#releases"
+    message_template: |
+      🚀 {{ .ProjectName }} {{ .Version }} released!
+      {{ .ReleaseURL }}
