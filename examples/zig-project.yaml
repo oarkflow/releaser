@@ -1,0 +1,303 @@
+# Releaser configuration for Zig projects
+# Supports Zig build system and cross-compilation
+
+version: 2
+
+project_name: myapp-zig
+
+defaults:
+  homepage: https://github.com/user/myapp-zig
+  description: A Zig application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - ZIG_LOCAL_CACHE_DIR=.zig-cache
+  - ZIG_GLOBAL_CACHE_DIR=.zig-cache/global
+
+variables:
+  owner: user
+  repo: myapp-zig
+
+before:
+  hooks:
+    - cmd: zig build test
+
+builds:
+  # Native Zig builds with cross-compilation
+  - id: zig-native
+    builder: custom
+    command: |
+      ZIG_TARGET="{{ if eq .Arch "amd64" }}x86_64{{ else if eq .Arch "arm64" }}aarch64{{ else }}{{ .Arch }}{{ end }}-{{ .Os }}-{{ if eq .Os "linux" }}gnu{{ else if eq .Os "darwin" }}macos{{ else }}windows{{ end }}"
+      zig build -Doptimize=ReleaseSafe -Dtarget=$ZIG_TARGET
+      mkdir -p ./dist/{{ .Os }}_{{ .Arch }}
+      cp zig-out/bin/myapp{{ if eq .Os "windows" }}.exe{{ end }} ./dist/{{ .Os }}_{{ .Arch }}/
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+
+  # Musl static build for fully static Linux binaries
+  - id: zig-musl
+    builder: custom
+    command: |
+      zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-linux-musl
+      mkdir -p ./dist/linux_amd64_musl
+      cp zig-out/bin/myapp ./dist/linux_amd64_musl/
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # WebAssembly build
+  - id: zig-wasm
+    builder: custom
+    command: |
+      zig build -Doptimize=ReleaseSmall -Dtarget=wasm32-wasi
+      mkdir -p ./dist/wasm
+      cp zig-out/bin/myapp.wasm ./dist/wasm/
+    goos:
+      - js  # Special GOOS for WASM
+    goarch:
+      - wasm
+
+  # Freestanding/embedded build
+  - id: zig-embedded
+    builder: custom
+    command: |
+      zig build -Doptimize=ReleaseSmall -Dtarget=arm-freestanding-eabi
+      mkdir -p ./dist/embedded_arm
+      cp zig-out/bin/myapp.bin ./dist/embedded_arm/
+    goos:
+      - none  # Freestanding
+    goarch:
+      - arm
+
+# UPX compression for smaller binaries
+upx:
+  - enabled: true
+    ids:
+      - zig-native
+      - zig-musl
+    compress: best
+    lzma: true
+    goos:
+      - linux
+      - windows
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - doc/**/*
+    wrap_in_directory: true
+
+  - id: wasm-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_wasm"
+    files:
+      - dist/wasm/myapp.wasm
+      - web/**/*
+      - LICENSE
+
+nfpms:
+  - id: zig-packages
+    package_name: myapp-zig
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Zig CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./completions/myapp.bash
+        dst: /usr/share/bash-completion/completions/myapp
+        type: file
+      - src: ./completions/myapp.zsh
+        dst: /usr/share/zsh/site-functions/_myapp
+        type: file
+      - src: ./completions/myapp.fish
+        dst: /usr/share/fish/vendor_completions.d/myapp.fish
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak for Linux desktop
+flatpaks:
+  - id: zig-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage for portable Linux
+appimages:
+  - id: zig-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows NSIS installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Zig
+    installer_name: "myapp-zig-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+      - src: ./README.md
+        dst: README.txt
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: zig-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Scratch-based minimal image with static binary
+  - id: zig-docker-scratch
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-scratch"
+    dockerfile: Dockerfile.scratch
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+# Multi-arch Docker manifest
+docker_manifests:
+  - id: multi-arch
+    name_template: "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-arm64"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: spdx
+    artifacts: archive
+    documents:
+      - spdx-json
+    args:
+      - scan
+      - "-o"
+      - "spdx-json={{ .ArtifactName }}.spdx.json"
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-zig
+    description: A Zig CLI application
+    homepage: https://github.com/user/myapp-zig
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: zig
+        type: build
+    install: |
+      system "zig", "build", "-Doptimize=ReleaseSafe"
+      bin.install "zig-out/bin/myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-zig
+    description: A Zig CLI application
+    homepage: https://github.com/user/myapp-zig
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-zig.git
+    depends:
+      - glibc
+    makedepends:
+      - zig
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      zig build -Doptimize=ReleaseSafe --prefix "$pkgdir/usr"
+
+scoops:
+  - name: myapp-zig
+    description: A Zig CLI application
+    homepage: https://github.com/user/myapp-zig
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-zig
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Zig CLI application
+    license: MIT
+    repository:
+      owner: user
+      name: winget-pkgs

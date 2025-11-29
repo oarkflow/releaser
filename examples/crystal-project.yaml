@@ -1,0 +1,269 @@
+# Releaser configuration for Crystal projects
+# Supports Crystal builds, Shards publishing, and cross-compilation
+
+version: 2
+
+project_name: myapp-crystal
+
+defaults:
+  homepage: https://github.com/user/myapp-crystal
+  description: A Crystal application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - CRYSTAL_WORKERS=4
+
+variables:
+  owner: user
+  repo: myapp-crystal
+
+before:
+  hooks:
+    - cmd: shards install --production
+    - cmd: crystal spec
+
+builds:
+  # Crystal native builds
+  - id: crystal-native
+    builder: custom
+    command: |
+      crystal build src/myapp.cr --release --no-debug -o ./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  # Static build with musl (Linux only)
+  - id: crystal-static
+    builder: custom
+    command: |
+      crystal build src/myapp.cr --release --static --no-debug -o ./dist/static_linux_amd64/myapp
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # Cross-compile for different targets
+  - id: crystal-cross
+    builder: custom
+    command: |
+      TARGET="{{ if eq .Os "linux" }}x86_64-linux-gnu{{ else if eq .Os "darwin" }}x86_64-darwin{{ else }}x86_64-windows-msvc{{ end }}"
+      crystal build src/myapp.cr --release --no-debug --cross-compile --target=$TARGET -o ./dist/cross_{{ .Os }}_{{ .Arch }}/myapp
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+# UPX compression for smaller binaries
+upx:
+  - enabled: true
+    ids:
+      - crystal-static
+    compress: best
+    lzma: true
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: shard-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - src/**/*
+      - shard.yml
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+nfpms:
+  - id: crystal-packages
+    package_name: myapp-crystal
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Crystal CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    dependencies:
+      - libc6
+      - libgc1
+      - libevent-2.1-7
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./completions/myapp.bash
+        dst: /usr/share/bash-completion/completions/myapp
+        type: file
+      - src: ./completions/myapp.zsh
+        dst: /usr/share/zsh/site-functions/_myapp
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: crystal-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: crystal-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Snap package
+snaps:
+  - id: crystal-snap
+    name: myapp
+    base: core22
+    grade: stable
+    confinement: strict
+    summary: A Crystal CLI application
+    description: |
+      MyApp is a fast CLI tool built with Crystal.
+    apps:
+      myapp:
+        command: myapp
+        plugs:
+          - home
+          - network
+
+dockers:
+  - id: crystal-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Scratch-based minimal image with static binary
+  - id: crystal-docker-scratch
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-scratch"
+    dockerfile: Dockerfile.scratch
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: spdx
+    artifacts: archive
+    documents:
+      - spdx-json
+    args:
+      - scan
+      - "-o"
+      - "spdx-json={{ .ArtifactName }}.spdx.json"
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-crystal
+    description: A Crystal CLI application
+    homepage: https://github.com/user/myapp-crystal
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: crystal
+        type: build
+      - name: bdw-gc
+      - name: libevent
+    install: |
+      system "shards", "build", "--release", "--production"
+      bin.install "bin/myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-crystal
+    description: A Crystal CLI application
+    homepage: https://github.com/user/myapp-crystal
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-crystal.git
+    depends:
+      - gc
+      - libevent
+    makedepends:
+      - crystal
+      - shards
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      shards build --release --production
+      install -Dm755 bin/myapp "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-crystal
+    description: A Crystal CLI application
+    homepage: https://github.com/user/myapp-crystal
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket

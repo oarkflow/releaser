@@ -1,0 +1,175 @@
+# Releaser configuration for Swift projects
+# Supports macOS, iOS, and Linux applications
+
+version: 2
+
+project_name: myapp-swift
+
+defaults:
+  homepage: https://github.com/user/myapp-swift
+  description: A Swift application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+
+variables:
+  owner: user
+  repo: myapp-swift
+  swift_version: "5.9"
+
+before:
+  hooks:
+    - cmd: swift package resolve
+    - cmd: swift test
+
+builds:
+  # macOS builds using swift build
+  - id: swift-macos
+    builder: custom
+    command: |
+      swift build -c release \
+        --arch {{ if eq .Arch "amd64" }}x86_64{{ else }}arm64{{ end }} \
+        -Xswiftc -cross-module-optimization
+      cp .build/release/myapp ./dist/{{ .Os }}_{{ .Arch }}/myapp
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  # Linux builds
+  - id: swift-linux
+    builder: custom
+    command: |
+      swift build -c release \
+        --static-swift-stdlib
+      cp .build/release/myapp ./dist/{{ .Os }}_{{ .Arch }}/myapp
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+# Universal binary for macOS (combines x86_64 and arm64)
+universal_binaries:
+  - id: macos-universal
+    ids:
+      - swift-macos
+    name_template: "myapp"
+    replace: true
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+
+# macOS App Bundle
+app_bundles:
+  - id: macos-app
+    name: MyApp
+    bundle_id: com.mycompany.myapp
+    icon: assets/AppIcon.icns
+    info_plist:
+      CFBundleDisplayName: MyApp
+      CFBundleShortVersionString: "{{ .Version }}"
+      NSHighResolutionCapable: true
+    ids:
+      - swift-macos
+    category: public.app-category.utilities
+    copyright: "Copyright © 2024 MyCompany"
+    minimum_os_version: "12.0"
+
+# macOS DMG installer
+dmgs:
+  - id: macos-dmg
+    name: "MyApp-{{ .Version }}"
+    background: assets/dmg-background.png
+    icon_size: 80
+    window_width: 600
+    window_height: 400
+    files:
+      - src: ./dist/darwin_amd64/MyApp.app
+        dst: MyApp.app
+
+nfpms:
+  - id: swift-linux-packages
+    package_name: myapp-swift
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Swift CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - libswift5
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+
+dockers:
+  - id: swift-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+    dockerfile: Dockerfile.linux
+    goos: linux
+    goarch: amd64
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  # Notarize macOS builds
+  - id: notarize
+    cmd: codesign
+    args:
+      - "--deep"
+      - "--force"
+      - "--verify"
+      - "--verbose"
+      - "--sign"
+      - "Developer ID Application: {{ .Env.APPLE_DEVELOPER_ID }}"
+      - "${artifact}"
+    artifacts: all
+    ids:
+      - swift-macos
+      - macos-app
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+  extra_files:
+    - glob: ./dist/*.dmg
+
+brews:
+  - name: myapp-swift
+    description: A Swift CLI application
+    homepage: https://github.com/user/myapp-swift
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"

@@ -1,0 +1,284 @@
+# Releaser configuration for Bun projects
+# Supports Bun compile, npm publishing, and native builds
+
+version: 2
+
+project_name: myapp-bun
+
+defaults:
+  homepage: https://github.com/user/myapp-bun
+  description: A Bun application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - BUN_INSTALL={{ .Env.HOME }}/.bun
+  - NPM_TOKEN={{ .Env.NPM_TOKEN }}
+
+variables:
+  owner: user
+  repo: myapp-bun
+
+before:
+  hooks:
+    - cmd: bun install --frozen-lockfile
+    - cmd: bun test
+
+builds:
+  # Bun compile - create self-contained executables
+  - id: bun-compile
+    builder: custom
+    command: |
+      TARGET="{{ .Os }}-{{ if eq .Arch "amd64" }}x64{{ else }}aarch64{{ end }}"
+      bun build src/index.ts --compile --target=bun-$TARGET --outfile=./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Bun compile with minification
+  - id: bun-compile-minified
+    builder: custom
+    command: |
+      TARGET="{{ .Os }}-{{ if eq .Arch "amd64" }}x64{{ else }}aarch64{{ end }}"
+      bun build src/index.ts --compile --minify --target=bun-$TARGET --outfile=./dist/minified_{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Bundle for Node.js compatibility
+  - id: bun-bundle-node
+    builder: custom
+    command: |
+      bun build src/index.ts --target=node --outfile=./dist/node/myapp.js
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # Bundle for browser
+  - id: bun-bundle-browser
+    builder: custom
+    command: |
+      bun build src/browser.ts --target=browser --minify --outdir=./dist/browser
+    goos:
+      - js
+    goarch:
+      - wasm
+
+# Publish to NPM
+npms:
+  - id: npm-publish
+    name: "@myorg/myapp"
+    access: public
+    registry: https://registry.npmjs.org
+    token: "{{ .Env.NPM_TOKEN }}"
+    files:
+      - dist/node/**/*
+      - src/**/*
+      - package.json
+      - README.md
+      - LICENSE
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: browser-bundle
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_browser"
+    files:
+      - dist/browser/**/*
+      - LICENSE
+
+nfpms:
+  - id: bun-packages
+    package_name: myapp-bun
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Bun CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./completions/myapp.bash
+        dst: /usr/share/bash-completion/completions/myapp
+        type: file
+      - src: ./completions/myapp.zsh
+        dst: /usr/share/zsh/site-functions/_myapp
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: bun-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: bun-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Bun
+    installer_name: "myapp-bun-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+      - src: ./README.md
+        dst: README.txt
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: bun-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Distroless image with compiled binary
+  - id: bun-docker-distroless
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-distroless"
+    dockerfile: Dockerfile.distroless
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+# Multi-arch manifest
+docker_manifests:
+  - id: multi-arch
+    name_template: "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-arm64"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: spdx
+    artifacts: archive
+    documents:
+      - spdx-json
+    args:
+      - scan
+      - "-o"
+      - "spdx-json={{ .ArtifactName }}.spdx.json"
+
+signs:
+  - id: cosign
+    cmd: cosign
+    certificate: "${certificate}"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-bun
+    description: A Bun CLI application
+    homepage: https://github.com/user/myapp-bun
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-bun
+    description: A Bun CLI application
+    homepage: https://github.com/user/myapp-bun
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-bun.git
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      install -Dm755 myapp "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-bun
+    description: A Bun CLI application
+    homepage: https://github.com/user/myapp-bun
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-bun
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Bun CLI application
+    license: MIT
+    repository:
+      owner: user
+      name: winget-pkgs

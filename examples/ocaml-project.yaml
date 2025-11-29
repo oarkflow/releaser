@@ -1,0 +1,272 @@
+# Releaser configuration for OCaml projects
+# Supports OPAM publishing and native compilation
+
+version: 2
+
+project_name: myapp-ocaml
+
+defaults:
+  homepage: https://github.com/user/myapp-ocaml
+  description: An OCaml application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - OPAMROOT={{ .Env.HOME }}/.opam
+  - OPAM_PUBLISH_TOKEN={{ .Env.OPAM_PUBLISH_TOKEN }}
+
+variables:
+  owner: user
+  repo: myapp-ocaml
+
+before:
+  hooks:
+    - cmd: opam install --deps-only -y .
+    - cmd: dune build
+    - cmd: dune runtest
+
+builds:
+  # Dune native builds
+  - id: ocaml-native
+    builder: custom
+    command: |
+      dune build --release
+      mkdir -p ./dist/{{ .Os }}_{{ .Arch }}
+      cp _build/default/bin/myapp.exe ./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+  # Static binary with musl
+  - id: ocaml-static
+    builder: custom
+    command: |
+      # Build with static linking
+      opam exec -- dune build --release --force-dune-lsp=false
+      mkdir -p ./dist/static_linux_amd64
+      cp _build/default/bin/myapp.exe ./dist/static_linux_amd64/myapp
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # Cross-compile for different targets
+  - id: ocaml-cross
+    builder: custom
+    command: |
+      opam exec -- ocamlfind -toolchain {{ .Os }}-{{ .Arch }} ocamlopt -o ./dist/cross_{{ .Os }}_{{ .Arch }}/myapp src/main.ml
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+# UPX compression
+upx:
+  - enabled: true
+    ids:
+      - ocaml-static
+    compress: best
+    lzma: true
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: opam-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - src/**/*
+      - bin/**/*
+      - lib/**/*
+      - dune
+      - dune-project
+      - "*.opam"
+      - README.md
+      - LICENSE
+      - CHANGES.md
+
+# Publish to OPAM repository
+opam:
+  - id: opam-publish
+    name: myapp
+    version: "{{ .Version }}"
+    repository: opam-repository
+    # OPAM uses GitHub PRs for package submission
+    github_token: "{{ .Env.OPAM_PUBLISH_TOKEN }}"
+
+nfpms:
+  - id: ocaml-packages
+    package_name: myapp-ocaml
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: An OCaml CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./lib
+        dst: /usr/lib/ocaml/myapp
+        type: tree
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: ocaml-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: ocaml-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp OCaml
+    installer_name: "myapp-ocaml-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: ocaml-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Alpine-based slim image
+  - id: ocaml-docker-alpine
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-alpine"
+    dockerfile: Dockerfile.alpine
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-ocaml
+    description: An OCaml CLI application
+    homepage: https://github.com/user/myapp-ocaml
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: ocaml
+        type: build
+      - name: dune
+        type: build
+      - name: opam
+        type: build
+    install: |
+      system "opam", "install", "--deps-only", "-y", "."
+      system "dune", "build", "--release"
+      bin.install "_build/default/bin/myapp.exe" => "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-ocaml
+    description: An OCaml CLI application
+    homepage: https://github.com/user/myapp-ocaml
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-ocaml.git
+    depends:
+      - glibc
+    makedepends:
+      - ocaml
+      - dune
+      - opam
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      opam install --deps-only -y .
+      dune build --release
+      install -Dm755 _build/default/bin/myapp.exe "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-ocaml
+    description: An OCaml CLI application
+    homepage: https://github.com/user/myapp-ocaml
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket

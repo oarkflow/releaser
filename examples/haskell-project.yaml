@@ -1,0 +1,285 @@
+# Releaser configuration for Haskell projects
+# Supports Stack, Cabal, and Hackage publishing
+
+version: 2
+
+project_name: myapp-haskell
+
+defaults:
+  homepage: https://github.com/user/myapp-haskell
+  description: A Haskell application built with Releaser
+  license: BSD-3-Clause
+  maintainer: developer@example.com
+
+env:
+  - STACK_YAML=stack.yaml
+  - HACKAGE_TOKEN={{ .Env.HACKAGE_TOKEN }}
+
+variables:
+  owner: user
+  repo: myapp-haskell
+
+before:
+  hooks:
+    - cmd: stack setup
+    - cmd: stack build --test --no-run-tests
+
+builds:
+  # Stack-based builds
+  - id: haskell-stack
+    builder: custom
+    command: |
+      stack build --copy-bins --local-bin-path ./dist/{{ .Os }}_{{ .Arch }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  # Cabal-based builds
+  - id: haskell-cabal
+    builder: custom
+    command: |
+      cabal build all
+      mkdir -p ./dist/cabal_{{ .Os }}_{{ .Arch }}
+      cp $(cabal list-bin myapp) ./dist/cabal_{{ .Os }}_{{ .Arch }}/
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+
+  # Static binary with musl (for portable Linux binaries)
+  - id: haskell-static
+    builder: custom
+    command: |
+      stack build --ghc-options='-static -optl-static -optl-pthread -fPIC'
+      stack install --local-bin-path ./dist/static_linux_amd64
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+# Use UPX to compress static binaries
+upx:
+  - enabled: true
+    ids:
+      - haskell-static
+    compress: best
+    lzma: true
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+    wrap_in_directory: true
+
+  - id: hackage-sdist
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - "*.cabal"
+      - src/**/*
+      - app/**/*
+      - test/**/*
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - Setup.hs
+
+nfpms:
+  - id: haskell-packages
+    package_name: myapp-haskell
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Haskell CLI application
+    license: BSD-3-Clause
+    formats:
+      - deb
+      - rpm
+      - apk
+    dependencies:
+      - gmp
+      - zlib
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./config/myapp.yaml
+        dst: /etc/myapp/config.yaml
+        type: config|noreplace
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Publish to Hackage
+hackage:
+  - id: hackage-publish
+    name: myapp-haskell
+    username: "{{ .Env.HACKAGE_USERNAME }}"
+    password: "{{ .Env.HACKAGE_PASSWORD }}"
+    # Or use API token
+    api_token: "{{ .Env.HACKAGE_TOKEN }}"
+    # Upload documentation
+    docs: true
+    # Candidate upload (for testing)
+    candidate: false
+
+# Also publish to Stackage
+stackage:
+  - id: stackage-publish
+    name: myapp-haskell
+    # Submit to Stackage LTS
+    snapshot: lts
+    github_issue: true
+
+# Flatpak for Linux desktop apps
+flatpaks:
+  - id: haskell-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: haskell-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Haskell
+    installer_name: "myapp-haskell-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+      - src: ./README.md
+        dst: README.txt
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: haskell-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Alpine-based slim image
+  - id: haskell-docker-alpine
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-alpine"
+    dockerfile: Dockerfile.alpine
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-haskell
+    description: A Haskell CLI application
+    homepage: https://github.com/user/myapp-haskell
+    license: BSD-3-Clause
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: ghc
+        type: build
+      - name: cabal-install
+        type: build
+      - name: gmp
+    install: |
+      system "cabal", "update"
+      system "cabal", "install", "--installdir=#{bin}"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-haskell
+    description: A Haskell CLI application
+    homepage: https://github.com/user/myapp-haskell
+    license: BSD-3-Clause
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-haskell.git
+    depends:
+      - gmp
+      - zlib
+    makedepends:
+      - ghc
+      - stack
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      stack setup
+      stack build --copy-bins --local-bin-path "$pkgdir/usr/bin"
+
+scoops:
+  - name: myapp-haskell
+    description: A Haskell CLI application
+    homepage: https://github.com/user/myapp-haskell
+    license: BSD-3-Clause
+    repository:
+      owner: user
+      name: scoop-bucket

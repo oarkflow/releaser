@@ -1,0 +1,222 @@
+# Releaser configuration for Lua projects
+# Supports LuaRocks publishing and bundling
+
+version: 2
+
+project_name: myapp-lua
+
+defaults:
+  homepage: https://github.com/user/myapp-lua
+  description: A Lua application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - LUAROCKS_API_KEY={{ .Env.LUAROCKS_API_KEY }}
+
+variables:
+  owner: user
+  repo: myapp-lua
+
+before:
+  hooks:
+    - cmd: luarocks install --only-deps myapp-dev-1.rockspec
+    - cmd: busted --verbose
+
+builds:
+  # Luastatic - create standalone executables
+  - id: lua-static
+    builder: custom
+    command: |
+      luastatic src/main.lua /usr/lib/liblua5.4.a -I/usr/include/lua5.4 -o ./dist/{{ .Os }}_{{ .Arch }}/myapp
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+
+  # Using lua-amalg for single-file bundle
+  - id: lua-amalg
+    builder: custom
+    command: |
+      amalg.lua -s src/main.lua -o ./dist/bundle/myapp.lua myapp myapp.utils
+      echo '#!/usr/bin/env lua' | cat - ./dist/bundle/myapp.lua > ./dist/bundle/myapp
+      chmod +x ./dist/bundle/myapp
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+
+  # LuaJIT compilation
+  - id: luajit-compiled
+    builder: custom
+    command: |
+      luajit -b src/main.lua ./dist/luajit/myapp.luac
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: luarocks-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - src/**/*
+      - "*.rockspec"
+      - README.md
+      - LICENSE
+
+# Publish to LuaRocks
+luarocks:
+  - id: luarocks-publish
+    name: myapp
+    version: "{{ .Version }}"
+    api_key: "{{ .Env.LUAROCKS_API_KEY }}"
+    rockspec: myapp-{{ .Version }}-1.rockspec
+    # Rock server URL (default is luarocks.org)
+    server: https://luarocks.org
+
+nfpms:
+  - id: lua-packages
+    package_name: myapp-lua
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Lua CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    dependencies:
+      - lua5.4
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./src
+        dst: /usr/share/lua/5.4/myapp
+        type: tree
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: lua-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - lua
+      - myapp
+
+# AppImage
+appimages:
+  - id: lua-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+dockers:
+  - id: lua-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-lua
+    description: A Lua CLI application
+    homepage: https://github.com/user/myapp-lua
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: lua
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-lua
+    description: A Lua CLI application
+    homepage: https://github.com/user/myapp-lua
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-lua.git
+    depends:
+      - lua
+    makedepends:
+      - luarocks
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      install -Dm755 myapp "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-lua
+    description: A Lua CLI application
+    homepage: https://github.com/user/myapp-lua
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket

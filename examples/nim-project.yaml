@@ -1,0 +1,282 @@
+# Releaser configuration for Nim projects
+# Supports Nimble publishing and cross-compilation
+
+version: 2
+
+project_name: myapp-nim
+
+defaults:
+  homepage: https://github.com/user/myapp-nim
+  description: A Nim application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - NIMBLE_DIR={{ .Env.HOME }}/.nimble
+
+variables:
+  owner: user
+  repo: myapp-nim
+
+before:
+  hooks:
+    - cmd: nimble install -y
+    - cmd: nimble test
+
+builds:
+  # Native Nim builds
+  - id: nim-native
+    builder: custom
+    command: |
+      nim compile -d:release --opt:speed --passL:-s -o:./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }} src/myapp.nim
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Danger mode for maximum performance
+  - id: nim-danger
+    builder: custom
+    command: |
+      nim compile -d:danger --opt:speed --passL:-s -o:./dist/danger_{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }} src/myapp.nim
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+  # Static musl build for portable Linux binaries
+  - id: nim-static
+    builder: custom
+    command: |
+      nim compile -d:release --opt:speed --passL:-static -o:./dist/static_linux_amd64/myapp src/myapp.nim
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # Cross-compile to different OS
+  - id: nim-cross
+    builder: custom
+    command: |
+      {{ if eq .Os "windows" }}
+      nim compile -d:release --os:windows --cpu:amd64 --gcc.exe:x86_64-w64-mingw32-gcc --gcc.linkerexe:x86_64-w64-mingw32-gcc -o:./dist/windows_amd64/myapp.exe src/myapp.nim
+      {{ else if eq .Os "darwin" }}
+      nim compile -d:release --os:macosx --cpu:amd64 -o:./dist/darwin_amd64/myapp src/myapp.nim
+      {{ else }}
+      nim compile -d:release --os:linux --cpu:amd64 -o:./dist/linux_amd64/myapp src/myapp.nim
+      {{ end }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+# UPX compression
+upx:
+  - enabled: true
+    ids:
+      - nim-static
+      - nim-danger
+    compress: best
+    lzma: true
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: nimble-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - src/**/*
+      - "*.nimble"
+      - README.md
+      - LICENSE
+
+# Publish to Nimble directory
+nimble:
+  - id: nimble-publish
+    name: myapp
+    version: "{{ .Version }}"
+    # Nimble uses GitHub tags for versioning
+    # Ensure proper tagging in release
+
+nfpms:
+  - id: nim-packages
+    package_name: myapp-nim
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Nim CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./completions/myapp.bash
+        dst: /usr/share/bash-completion/completions/myapp
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: nim-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: nim-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Nim
+    installer_name: "myapp-nim-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+      - src: ./README.md
+        dst: README.txt
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: nim-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Scratch image with static binary
+  - id: nim-docker-scratch
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-scratch"
+    dockerfile: Dockerfile.scratch
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-nim
+    description: A Nim CLI application
+    homepage: https://github.com/user/myapp-nim
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: nim
+        type: build
+    install: |
+      system "nimble", "build", "-y", "-d:release"
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-nim
+    description: A Nim CLI application
+    homepage: https://github.com/user/myapp-nim
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-nim.git
+    makedepends:
+      - nim
+      - nimble
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      nimble build -y -d:release
+      install -Dm755 myapp "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-nim
+    description: A Nim CLI application
+    homepage: https://github.com/user/myapp-nim
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-nim
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Nim CLI application
+    license: MIT
+    repository:
+      owner: user
+      name: winget-pkgs

@@ -1,0 +1,310 @@
+# Releaser configuration for Clojure projects
+# Supports Leiningen, deps.edn, Clojars publishing, and GraalVM native-image
+
+version: 2
+
+project_name: myapp-clojure
+
+defaults:
+  homepage: https://github.com/user/myapp-clojure
+  description: A Clojure application built with Releaser
+  license: EPL-2.0
+  maintainer: developer@example.com
+
+env:
+  - LEIN_SNAPSHOTS_IN_RELEASE=true
+  - CLOJARS_USERNAME={{ .Env.CLOJARS_USERNAME }}
+  - CLOJARS_PASSWORD={{ .Env.CLOJARS_PASSWORD }}
+  - GRAALVM_HOME={{ .Env.GRAALVM_HOME }}
+
+variables:
+  owner: user
+  repo: myapp-clojure
+
+before:
+  hooks:
+    - cmd: lein deps
+    - cmd: lein test
+
+builds:
+  # Uberjar build
+  - id: clojure-uberjar
+    builder: custom
+    command: |
+      lein uberjar
+      mkdir -p ./dist/uberjar
+      cp target/uberjar/myapp-*-standalone.jar ./dist/uberjar/myapp.jar
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+  # GraalVM native-image
+  - id: clojure-native
+    builder: custom
+    command: |
+      lein uberjar
+      $GRAALVM_HOME/bin/native-image \
+        -jar target/uberjar/myapp-*-standalone.jar \
+        -H:Name=myapp \
+        -H:+ReportExceptionStackTraces \
+        --no-fallback \
+        --initialize-at-build-time \
+        -o ./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Babashka script (if using bb)
+  - id: clojure-babashka
+    builder: custom
+    command: |
+      bb uberscript ./dist/bb/myapp.clj -m myapp.core
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+# UPX compression for native binaries
+upx:
+  - enabled: true
+    ids:
+      - clojure-native
+    compress: best
+    lzma: true
+    goos:
+      - linux
+      - windows
+
+archives:
+  - id: uberjar
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_uberjar"
+    files:
+      - dist/uberjar/myapp.jar
+      - LICENSE*
+      - README*
+
+  - id: native
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+    wrap_in_directory: true
+
+  - id: clojars-package
+    format: jar
+    name_template: "myapp-{{ .Version }}"
+    files:
+      - src/**/*
+      - project.clj
+      - pom.xml
+      - README.md
+      - LICENSE
+
+# Publish to Clojars
+clojars:
+  - id: clojars-publish
+    group_id: com.example
+    artifact_id: myapp
+    version: "{{ .Version }}"
+    username: "{{ .Env.CLOJARS_USERNAME }}"
+    password: "{{ .Env.CLOJARS_PASSWORD }}"
+    # Or use deploy token
+    deploy_token: "{{ .Env.CLOJARS_DEPLOY_TOKEN }}"
+    sign: true
+    gpg_key: "{{ .Env.GPG_FINGERPRINT }}"
+
+nfpms:
+  - id: clojure-packages
+    package_name: myapp-clojure
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Clojure CLI application
+    license: EPL-2.0
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - openjdk-17-jre-headless
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      # Or for uberjar deployment
+      - src: ./dist/uberjar/myapp.jar
+        dst: /usr/share/myapp/myapp.jar
+        type: file
+      - src: ./scripts/myapp-wrapper.sh
+        dst: /usr/bin/myapp-jar
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: clojure-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: clojure-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Clojure
+    installer_name: "myapp-clojure-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: admin
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: clojure-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # GraalVM native image in distroless
+  - id: clojure-docker-native
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-native"
+    dockerfile: Dockerfile.native
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: spdx
+    artifacts: archive
+    documents:
+      - spdx-json
+    args:
+      - scan
+      - "-o"
+      - "spdx-json={{ .ArtifactName }}.spdx.json"
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Performance
+      regexp: "^perf:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+  extra_files:
+    - glob: "./dist/uberjar/*.jar"
+
+brews:
+  - name: myapp-clojure
+    description: A Clojure CLI application
+    homepage: https://github.com/user/myapp-clojure
+    license: EPL-2.0
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: openjdk
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-clojure
+    description: A Clojure CLI application
+    homepage: https://github.com/user/myapp-clojure
+    license: EPL-2.0
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-clojure.git
+    depends:
+      - java-runtime
+    makedepends:
+      - leiningen
+      - graalvm-jdk-bin
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      install -Dm755 myapp "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-clojure
+    description: A Clojure CLI application
+    homepage: https://github.com/user/myapp-clojure
+    license: EPL-2.0
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-clojure
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Clojure CLI application
+    license: EPL-2.0
+    repository:
+      owner: user
+      name: winget-pkgs

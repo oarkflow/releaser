@@ -170,6 +170,39 @@ type Config struct {
 
 	// Prebuilt binaries configuration
 	Prebuilt []Prebuilt `yaml:"prebuilt,omitempty"`
+
+	// Flatpak configuration
+	Flatpaks []Flatpak `yaml:"flatpaks,omitempty"`
+
+	// AppImage configuration
+	AppImages []AppImage `yaml:"appimages,omitempty"`
+
+	// Crates.io configuration
+	Crates []Crate `yaml:"crates,omitempty"`
+
+	// PyPI configuration
+	PyPIs []PyPI `yaml:"pypis,omitempty"`
+
+	// Maven Central configuration
+	Mavens []Maven `yaml:"mavens,omitempty"`
+
+	// NuGet configuration
+	NuGets []NuGet `yaml:"nugets,omitempty"`
+
+	// Gem configuration
+	Gems []Gem `yaml:"gems,omitempty"`
+
+	// Helm configuration
+	Helms []Helm `yaml:"helms,omitempty"`
+
+	// Cosign signing configuration
+	Cosigns []Cosign `yaml:"cosigns,omitempty"`
+
+	// Kubernetes manifests configuration
+	Kubernetes []Kubernetes `yaml:"kubernetes,omitempty"`
+
+	// Docker Compose configuration
+	DockerComposes []DockerCompose `yaml:"docker_composes,omitempty"`
 }
 
 // Defaults contains global default values

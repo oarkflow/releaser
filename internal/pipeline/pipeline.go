@@ -805,6 +805,86 @@ func (p *Pipeline) publishPackages(ctx context.Context) error {
 		}
 	}
 
+	// Publish to Scoop
+	for _, scoopCfg := range p.config.Scoops {
+		publisher := publish.NewScoopPublisher(scoopCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Scoop publish failed: %w", err)
+		}
+	}
+
+	// Publish to AUR
+	for _, aurCfg := range p.config.AURs {
+		publisher := publish.NewAURPublisher(aurCfg, p.templateCtx, p.artifacts)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("AUR publish failed: %w", err)
+		}
+	}
+
+	// Publish to Chocolatey
+	for _, chocoCfg := range p.config.Chocolateys {
+		publisher := publish.NewChocolateyPublisher(chocoCfg, p.templateCtx, p.artifacts)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Chocolatey publish failed: %w", err)
+		}
+	}
+
+	// Publish to Winget
+	for _, wingetCfg := range p.config.Wingets {
+		publisher := publish.NewWingetPublisher(wingetCfg, p.templateCtx, p.artifacts)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Winget publish failed: %w", err)
+		}
+	}
+
+	// Publish to crates.io
+	for _, crateCfg := range p.config.Crates {
+		publisher := publish.NewCratePublisher(crateCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Crate publish failed: %w", err)
+		}
+	}
+
+	// Publish to PyPI
+	for _, pypiCfg := range p.config.PyPIs {
+		publisher := publish.NewPyPIPublisher(pypiCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("PyPI publish failed: %w", err)
+		}
+	}
+
+	// Publish to Maven Central
+	for _, mavenCfg := range p.config.Mavens {
+		publisher := publish.NewMavenPublisher(mavenCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Maven publish failed: %w", err)
+		}
+	}
+
+	// Publish to NuGet
+	for _, nugetCfg := range p.config.NuGets {
+		publisher := publish.NewNuGetPublisher(nugetCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("NuGet publish failed: %w", err)
+		}
+	}
+
+	// Publish to RubyGems
+	for _, gemCfg := range p.config.Gems {
+		publisher := publish.NewGemPublisher(gemCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Gem publish failed: %w", err)
+		}
+	}
+
+	// Publish Helm charts
+	for _, helmCfg := range p.config.Helms {
+		publisher := publish.NewHelmPublisher(helmCfg, p.templateCtx)
+		if err := publisher.Publish(ctx, allArtifacts); err != nil {
+			return fmt.Errorf("Helm publish failed: %w", err)
+		}
+	}
+
 	return nil
 }
 

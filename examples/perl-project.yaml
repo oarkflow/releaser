@@ -1,0 +1,255 @@
+# Releaser configuration for Perl projects
+# Supports CPAN publishing and PAR packaging
+
+version: 2
+
+project_name: MyApp-Perl
+
+defaults:
+  homepage: https://github.com/user/MyApp-Perl
+  description: A Perl application built with Releaser
+  license: Artistic-2.0
+  maintainer: developer@example.com
+
+env:
+  - PERL_MM_USE_DEFAULT=1
+  - CPAN_USER={{ .Env.CPAN_USER }}
+  - CPAN_PASS={{ .Env.CPAN_PASS }}
+
+variables:
+  owner: user
+  repo: MyApp-Perl
+
+before:
+  hooks:
+    - cmd: cpanm --installdeps --notest .
+    - cmd: perl Makefile.PL
+    - cmd: make test
+
+builds:
+  # PAR::Packer - create standalone executables
+  - id: perl-par
+    builder: custom
+    command: |
+      pp -o ./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }} \
+        -M MyApp \
+        -a lib \
+        bin/myapp
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+  # PAR archive for distribution
+  - id: perl-par-archive
+    builder: custom
+    command: |
+      pp -p -o ./dist/par/myapp.par bin/myapp
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # FatPacker for single-file scripts
+  - id: perl-fatpack
+    builder: custom
+    command: |
+      fatpack pack bin/myapp > ./dist/fatpack/myapp
+      chmod +x ./dist/fatpack/myapp
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - Changes
+    wrap_in_directory: true
+
+  - id: cpan-tarball
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - lib/**/*
+      - bin/**/*
+      - t/**/*
+      - Makefile.PL
+      - MANIFEST
+      - META.yml
+      - META.json
+      - README
+      - Changes
+      - LICENSE
+
+# Publish to CPAN
+cpan:
+  - id: cpan-publish
+    name: MyApp-Perl
+    pause_user: "{{ .Env.CPAN_USER }}"
+    pause_password: "{{ .Env.CPAN_PASS }}"
+    # Or use environment variables
+    # Files to upload
+    tarball: "./dist/MyApp-Perl-{{ .Version }}.tar.gz"
+
+# Publish to CPAN via GitHub Actions
+cpan_github:
+  - id: cpan-github
+    name: MyApp-Perl
+    # Uses PAUSE credentials from GitHub secrets
+    # Triggered by release tag
+
+nfpms:
+  - id: perl-packages
+    package_name: myapp-perl
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Perl CLI application
+    license: Artistic-2.0
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - perl
+    recommends:
+      - liblocal-lib-perl
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./lib
+        dst: /usr/share/perl5/MyApp
+        type: tree
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: perl-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: perl-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Perl
+    installer_name: "myapp-perl-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: perl-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-perl
+    description: A Perl CLI application
+    homepage: https://github.com/user/MyApp-Perl
+    license: Artistic-2.0
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: perl
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: perl-myapp
+    description: A Perl CLI application
+    homepage: https://github.com/user/MyApp-Perl
+    license: Artistic-2.0
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/perl-myapp.git
+    depends:
+      - perl
+    makedepends:
+      - perl-module-build
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      perl Makefile.PL INSTALLDIRS=vendor
+      make install DESTDIR="$pkgdir"
+
+scoops:
+  - name: myapp-perl
+    description: A Perl CLI application
+    homepage: https://github.com/user/MyApp-Perl
+    license: Artistic-2.0
+    repository:
+      owner: user
+      name: scoop-bucket

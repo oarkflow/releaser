@@ -1,0 +1,292 @@
+# Releaser configuration for Julia projects
+# Supports Julia packages, BinaryBuilder, and JLL packages
+
+version: 2
+
+project_name: MyApp-julia
+
+defaults:
+  homepage: https://github.com/user/MyApp.jl
+  description: A Julia package built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - JULIA_DEPOT_PATH={{ .Env.HOME }}/.julia
+
+variables:
+  owner: user
+  repo: MyApp.jl
+
+before:
+  hooks:
+    - cmd: julia --project -e 'using Pkg; Pkg.instantiate()'
+    - cmd: julia --project -e 'using Pkg; Pkg.test()'
+
+builds:
+  # PackageCompiler.jl - create standalone executables
+  - id: julia-compiled
+    builder: custom
+    command: |
+      julia --project -e '
+        using PackageCompiler
+        create_app(".", "./dist/{{ .Os }}_{{ .Arch }}",
+          precompile_execution_file="precompile.jl",
+          include_lazy_artifacts=true,
+          force=true
+        )
+      '
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+  # System image (sysimage) for faster startup
+  - id: julia-sysimage
+    builder: custom
+    command: |
+      julia --project -e '
+        using PackageCompiler
+        create_sysimage(["MyApp"],
+          sysimage_path="./dist/sysimage/myapp.so",
+          precompile_execution_file="precompile.jl"
+        )
+      '
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+
+  # BinaryBuilder.jl for cross-platform binaries
+  - id: julia-binarybuilder
+    builder: custom
+    command: |
+      julia --project=build -e '
+        using BinaryBuilder
+        include("build_tarballs.jl")
+        build_tarballs(
+          ARGS,
+          "MyApp",
+          v"{{ .Version }}",
+          sources,
+          script,
+          platforms,
+          products,
+          dependencies
+        )
+      '
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+# Publish to Julia General Registry
+julia_registry:
+  - id: general-registry
+    name: MyApp
+    uuid: "12345678-1234-1234-1234-123456789abc"
+    # Registry PR is created automatically by Registrator.jl
+    # Just ensure proper tagging
+
+# Publish to private registry
+julia_private_registry:
+  - id: private-registry
+    name: MyApp
+    registry_url: "https://github.com/myorg/MyRegistry.git"
+    api_token: "{{ .Env.GITHUB_TOKEN }}"
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: julia-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - src/**/*
+      - Project.toml
+      - Manifest.toml
+      - README.md
+      - LICENSE
+      - docs/**/*
+
+nfpms:
+  - id: julia-packages
+    package_name: myapp-julia
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Julia application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - julia
+    contents:
+      - src: ./dist/linux_amd64/bin/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./dist/linux_amd64/lib
+        dst: /usr/lib/myapp
+        type: tree
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# AppImage for portable Linux
+appimages:
+  - id: julia-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Science;Development"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Julia
+    installer_name: "myapp-julia-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: admin
+    contents:
+      - src: ./dist/windows_amd64/*
+        dst: .
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\bin\myapp.exe"
+
+# macOS DMG
+dmgs:
+  - id: macos-dmg
+    name: MyApp
+    icon: assets/icon.icns
+    background: assets/dmg-background.png
+    window_size:
+      width: 600
+      height: 400
+    contents:
+      - src: ./dist/darwin_amd64/MyApp.app
+        x: 150
+        y: 200
+      - type: link
+        path: /Applications
+        x: 450
+        y: 200
+
+dockers:
+  - id: julia-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Jupyter notebook image
+  - id: julia-jupyter
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-jupyter"
+    dockerfile: Dockerfile.jupyter
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Documentation
+      regexp: "^docs:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-julia
+    description: A Julia application
+    homepage: https://github.com/user/MyApp.jl
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: julia
+    install: |
+      libexec.install Dir["*"]
+      bin.install_symlink libexec/"bin/myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-julia
+    description: A Julia application
+    homepage: https://github.com/user/MyApp.jl
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-julia.git
+    depends:
+      - julia
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      install -Dm755 bin/myapp "$pkgdir/usr/bin/myapp"
+      install -dm755 "$pkgdir/usr/lib/myapp"
+      cp -r lib/* "$pkgdir/usr/lib/myapp/"
+
+scoops:
+  - name: myapp-julia
+    description: A Julia application
+    homepage: https://github.com/user/MyApp.jl
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-julia
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Julia application
+    license: MIT
+    repository:
+      owner: user
+      name: winget-pkgs

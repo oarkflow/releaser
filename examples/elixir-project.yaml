@@ -1,0 +1,229 @@
+# Releaser configuration for Elixir/Erlang projects
+# Supports Mix, Hex.pm publishing, and OTP releases
+
+version: 2
+
+project_name: myapp_elixir
+
+defaults:
+  homepage: https://github.com/user/myapp_elixir
+  description: An Elixir application built with Releaser
+  license: Apache-2.0
+  maintainer: developer@example.com
+
+env:
+  - MIX_ENV=prod
+  - HEX_API_KEY={{ .Env.HEX_API_KEY }}
+
+variables:
+  owner: user
+  repo: myapp_elixir
+
+before:
+  hooks:
+    - cmd: mix local.hex --force
+    - cmd: mix local.rebar --force
+    - cmd: mix deps.get --only prod
+    - cmd: mix compile
+
+builds:
+  # OTP Release build
+  - id: elixir-release
+    builder: custom
+    command: |
+      export MIX_ENV=prod
+      mix release --overwrite
+      mkdir -p ./dist/{{ .Os }}_{{ .Arch }}
+      cp -r _build/prod/rel/myapp/* ./dist/{{ .Os }}_{{ .Arch }}/
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  # Escript build (portable Erlang script)
+  - id: elixir-escript
+    builder: custom
+    command: |
+      mix escript.build
+      mkdir -p ./dist/escript
+      cp myapp ./dist/escript/
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+
+  # Burrito-based native build (self-contained)
+  - id: elixir-burrito
+    builder: custom
+    command: |
+      export MIX_ENV=prod
+      export BURRITO_TARGET={{ .Os }}_{{ .Arch }}
+      mix release --overwrite
+      mkdir -p ./dist/burrito_{{ .Os }}_{{ .Arch }}
+      cp _build/prod/myapp_{{ .Os }}_{{ .Arch }}* ./dist/burrito_{{ .Os }}_{{ .Arch }}/
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: otp-release
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: hex-package
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}"
+    files:
+      - lib/**/*
+      - mix.exs
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+nfpms:
+  - id: elixir-packages
+    package_name: myapp-elixir
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: An Elixir OTP application
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - openssl
+    contents:
+      - src: ./dist/linux_amd64
+        dst: /opt/myapp
+        type: tree
+      - src: ./priv/systemd/myapp.service
+        dst: /etc/systemd/system/myapp.service
+        type: file
+      - src: ./config/runtime.exs
+        dst: /etc/myapp/runtime.exs
+        type: config|noreplace
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+# Publish to Hex.pm
+hexpm:
+  - id: hex-publish
+    name: myapp_elixir
+    description: An Elixir library for doing things
+    api_key: "{{ .Env.HEX_API_KEY }}"
+    organization: "" # Leave empty for public packages
+    replace: false
+    docs: true
+    # Additional metadata from mix.exs
+    files:
+      - lib
+      - priv
+      - mix.exs
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+dockers:
+  - id: elixir-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=MIX_ENV=prod"
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Slim Docker image using distroless
+  - id: elixir-docker-slim
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-slim"
+    dockerfile: Dockerfile.slim
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+# Docker Compose for full stack deployment
+docker_manifests:
+  - id: multi-arch
+    name_template: "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-arm64"
+
+# Kubernetes Helm chart
+helms:
+  - id: elixir-helm
+    repository: "https://{{ .Env.GITHUB_OWNER }}.github.io/charts"
+    chart_path: "./charts/myapp-elixir"
+    app_version: "{{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: spdx
+    artifacts: archive
+    documents:
+      - spdx-json
+    args:
+      - scan
+      - "-o"
+      - "spdx-json={{ .ArtifactName }}.spdx.json"
+
+signs:
+  - id: cosign
+    cmd: cosign
+    certificate: "${certificate}"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Documentation
+      regexp: "^docs:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+  extra_files:
+    - glob: "./dist/hex-package/*.tar.gz"
+
+# Announce release
+announce:
+  slack:
+    enabled: true
+    channel: "#releases"
+    message_template: |
+      🚀 {{ .ProjectName }} {{ .Version }} released!
+      {{ .ReleaseURL }}

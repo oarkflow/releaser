@@ -384,3 +384,187 @@ type AnnounceBluesky struct {
 	Enabled         bool   `yaml:"enabled,omitempty"`
 	MessageTemplate string `yaml:"message_template,omitempty"`
 }
+
+// CustomBuilder represents a custom build configuration
+type CustomBuilder struct {
+	ID      string            `yaml:"id"`
+	Name    string            `yaml:"name,omitempty"`
+	Command string            `yaml:"command"`
+	Dir     string            `yaml:"dir,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	Outputs []string          `yaml:"outputs,omitempty"`
+	Before  []string          `yaml:"before,omitempty"`
+	After   []string          `yaml:"after,omitempty"`
+	Goos    []string          `yaml:"goos,omitempty"`
+	Goarch  []string          `yaml:"goarch,omitempty"`
+	Skip    string            `yaml:"skip,omitempty"`
+}
+
+// Flatpak represents Flatpak package configuration
+type Flatpak struct {
+	ID             string   `yaml:"id,omitempty"`
+	Builds         []string `yaml:"builds,omitempty"`
+	AppID          string   `yaml:"app_id,omitempty"`
+	Runtime        string   `yaml:"runtime,omitempty"`
+	RuntimeVersion string   `yaml:"runtime_version,omitempty"`
+	SDK            string   `yaml:"sdk,omitempty"`
+	Command        string   `yaml:"command,omitempty"`
+	FinishArgs     []string `yaml:"finish_args,omitempty"`
+	Modules        []string `yaml:"modules,omitempty"`
+	Categories     []string `yaml:"categories,omitempty"`
+	Keywords       []string `yaml:"keywords,omitempty"`
+	Skip           string   `yaml:"skip,omitempty"`
+}
+
+// AppImage represents AppImage package configuration
+type AppImage struct {
+	ID          string      `yaml:"id,omitempty"`
+	Builds      []string    `yaml:"builds,omitempty"`
+	Name        string      `yaml:"name,omitempty"`
+	Icon        string      `yaml:"icon,omitempty"`
+	Desktop     string      `yaml:"desktop,omitempty"`
+	Description string      `yaml:"description,omitempty"`
+	Categories  string      `yaml:"categories,omitempty"`
+	Terminal    bool        `yaml:"terminal,omitempty"`
+	ExtraFiles  []ExtraFile `yaml:"extra_files,omitempty"`
+	Skip        string      `yaml:"skip,omitempty"`
+}
+
+// Crate represents Rust crates.io publishing configuration
+type Crate struct {
+	ID           string   `yaml:"id,omitempty"`
+	Registry     string   `yaml:"registry,omitempty"`
+	Token        string   `yaml:"token,omitempty"`
+	AllowDirty   bool     `yaml:"allow_dirty,omitempty"`
+	DryRun       bool     `yaml:"dry_run,omitempty"`
+	NoVerify     bool     `yaml:"no_verify,omitempty"`
+	Features     []string `yaml:"features,omitempty"`
+	AllFeatures  bool     `yaml:"all_features,omitempty"`
+	Jobs         int      `yaml:"jobs,omitempty"`
+	SkipUpload   string   `yaml:"skip_upload,omitempty"`
+	ManifestPath string   `yaml:"manifest_path,omitempty"`
+}
+
+// PyPI represents Python PyPI publishing configuration
+type PyPI struct {
+	ID            string   `yaml:"id,omitempty"`
+	Repository    string   `yaml:"repository,omitempty"`
+	Username      string   `yaml:"username,omitempty"`
+	Password      string   `yaml:"password,omitempty"`
+	Distributions []string `yaml:"distributions,omitempty"`
+	SkipExisting  bool     `yaml:"skip_existing,omitempty"`
+	SkipUpload    string   `yaml:"skip_upload,omitempty"`
+}
+
+// Maven represents Maven Central publishing configuration
+type Maven struct {
+	ID            string `yaml:"id,omitempty"`
+	GroupID       string `yaml:"group_id,omitempty"`
+	ArtifactID    string `yaml:"artifact_id,omitempty"`
+	Repository    string `yaml:"repository,omitempty"`
+	SnapshotRepo  string `yaml:"snapshot_repo,omitempty"`
+	Username      string `yaml:"username,omitempty"`
+	Password      string `yaml:"password,omitempty"`
+	GPGPassphrase string `yaml:"gpg_passphrase,omitempty"`
+	GPGKeyID      string `yaml:"gpg_key_id,omitempty"`
+	SkipUpload    string `yaml:"skip_upload,omitempty"`
+}
+
+// NuGet represents NuGet package publishing configuration
+type NuGet struct {
+	ID         string `yaml:"id,omitempty"`
+	Source     string `yaml:"source,omitempty"`
+	APIKey     string `yaml:"api_key,omitempty"`
+	SymbolsKey string `yaml:"symbols_key,omitempty"`
+	SkipUpload string `yaml:"skip_upload,omitempty"`
+}
+
+// Gem represents Ruby Gem publishing configuration
+type Gem struct {
+	ID         string `yaml:"id,omitempty"`
+	Host       string `yaml:"host,omitempty"`
+	APIKey     string `yaml:"api_key,omitempty"`
+	Gemspec    string `yaml:"gemspec,omitempty"`
+	SkipUpload string `yaml:"skip_upload,omitempty"`
+}
+
+// Helm represents Helm chart publishing configuration
+type Helm struct {
+	ID         string `yaml:"id,omitempty"`
+	Repository string `yaml:"repository,omitempty"`
+	Username   string `yaml:"username,omitempty"`
+	Password   string `yaml:"password,omitempty"`
+	ChartPath  string `yaml:"chart_path,omitempty"`
+	AppVersion string `yaml:"app_version,omitempty"`
+	SkipUpload string `yaml:"skip_upload,omitempty"`
+}
+
+// Cosign represents Cosign signing configuration
+type Cosign struct {
+	Cmd             string   `yaml:"cmd,omitempty"`
+	Artifacts       string   `yaml:"artifacts,omitempty"`
+	Images          []string `yaml:"images,omitempty"`
+	KeyRef          string   `yaml:"key_ref,omitempty"`
+	Password        string   `yaml:"password,omitempty"`
+	Keyless         bool     `yaml:"keyless,omitempty"`
+	FulcioURL       string   `yaml:"fulcio_url,omitempty"`
+	RekorURL        string   `yaml:"rekor_url,omitempty"`
+	OIDC            bool     `yaml:"oidc,omitempty"`
+	OIDCIssuer      string   `yaml:"oidc_issuer,omitempty"`
+	OIDCClientID    string   `yaml:"oidc_client_id,omitempty"`
+	RegistryOptions []string `yaml:"registry_options,omitempty"`
+}
+
+// Kubernetes represents Kubernetes deployment configuration
+type Kubernetes struct {
+	ID           string            `yaml:"id,omitempty"`
+	Name         string            `yaml:"name,omitempty"`
+	Namespace    string            `yaml:"namespace,omitempty"`
+	Image        string            `yaml:"image,omitempty"`
+	Replicas     int               `yaml:"replicas,omitempty"`
+	Ports        []int             `yaml:"ports,omitempty"`
+	Resources    K8sResources      `yaml:"resources,omitempty"`
+	Env          map[string]string `yaml:"env,omitempty"`
+	ConfigMaps   []string          `yaml:"config_maps,omitempty"`
+	Secrets      []string          `yaml:"secrets,omitempty"`
+	ServiceType  string            `yaml:"service_type,omitempty"`
+	IngressHost  string            `yaml:"ingress_host,omitempty"`
+	HelmChart    bool              `yaml:"helm_chart,omitempty"`
+	ChartVersion string            `yaml:"chart_version,omitempty"`
+	OutputDir    string            `yaml:"output_dir,omitempty"`
+}
+
+// K8sResources for Kubernetes resource limits
+type K8sResources struct {
+	Limits   K8sResourceSpec `yaml:"limits,omitempty"`
+	Requests K8sResourceSpec `yaml:"requests,omitempty"`
+}
+
+// K8sResourceSpec for CPU/Memory specs
+type K8sResourceSpec struct {
+	CPU    string `yaml:"cpu,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
+}
+
+// DockerCompose represents Docker Compose configuration
+type DockerCompose struct {
+	ID          string                    `yaml:"id,omitempty"`
+	File        string                    `yaml:"file,omitempty"`
+	ProjectName string                    `yaml:"project_name,omitempty"`
+	Services    map[string]ComposeService `yaml:"services,omitempty"`
+	Networks    map[string]interface{}    `yaml:"networks,omitempty"`
+	Volumes     map[string]interface{}    `yaml:"volumes,omitempty"`
+	OutputDir   string                    `yaml:"output_dir,omitempty"`
+}
+
+// ComposeService represents a Docker Compose service
+type ComposeService struct {
+	Image       string            `yaml:"image,omitempty"`
+	Build       string            `yaml:"build,omitempty"`
+	Ports       []string          `yaml:"ports,omitempty"`
+	Environment map[string]string `yaml:"environment,omitempty"`
+	Volumes     []string          `yaml:"volumes,omitempty"`
+	DependsOn   []string          `yaml:"depends_on,omitempty"`
+	Restart     string            `yaml:"restart,omitempty"`
+	Networks    []string          `yaml:"networks,omitempty"`
+}

@@ -1,0 +1,297 @@
+# Releaser configuration for Deno projects
+# Supports Deno compile, npm publishing, and JSR
+
+version: 2
+
+project_name: myapp-deno
+
+defaults:
+  homepage: https://github.com/user/myapp-deno
+  description: A Deno application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - DENO_DIR=.deno
+  - NPM_TOKEN={{ .Env.NPM_TOKEN }}
+  - JSR_TOKEN={{ .Env.JSR_TOKEN }}
+
+variables:
+  owner: user
+  repo: myapp-deno
+
+before:
+  hooks:
+    - cmd: deno cache --lock=deno.lock src/main.ts
+    - cmd: deno lint
+    - cmd: deno test --allow-all
+
+builds:
+  # Deno compile - create self-contained executables
+  - id: deno-compile
+    builder: custom
+    command: |
+      TARGET="{{ .Os }}-{{ if eq .Arch "amd64" }}x86_64{{ else }}aarch64{{ end }}"
+      deno compile --allow-all --target=$TARGET --output=./dist/{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }} src/main.ts
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Deno compile with embedded files
+  - id: deno-compile-embedded
+    builder: custom
+    command: |
+      TARGET="{{ .Os }}-{{ if eq .Arch "amd64" }}x86_64{{ else }}aarch64{{ end }}"
+      deno compile --allow-all --target=$TARGET --include=assets --output=./dist/embedded_{{ .Os }}_{{ .Arch }}/myapp{{ if eq .Os "windows" }}.exe{{ end }} src/main.ts
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  # Web bundle build for browsers
+  - id: deno-bundle
+    builder: custom
+    command: |
+      deno bundle src/mod.ts ./dist/bundle/myapp.bundle.js
+      # Also create minified version
+      deno run --allow-read --allow-write npm:terser ./dist/bundle/myapp.bundle.js -o ./dist/bundle/myapp.bundle.min.js
+    goos:
+      - js
+    goarch:
+      - wasm
+
+# Publish to JSR (JavaScript Registry)
+jsr:
+  - id: jsr-publish
+    name: "@myorg/myapp"
+    version: "{{ .Version }}"
+    api_token: "{{ .Env.JSR_TOKEN }}"
+    exports:
+      ".": "./src/mod.ts"
+      "./utils": "./src/utils.ts"
+    files:
+      - src/**/*.ts
+      - deno.json
+      - README.md
+      - LICENSE
+
+# Publish to NPM (with Node.js compatibility)
+npms:
+  - id: npm-publish
+    name: "@myorg/myapp"
+    access: public
+    registry: https://registry.npmjs.org
+    token: "{{ .Env.NPM_TOKEN }}"
+    # Build for npm
+    before_publish:
+      - deno run -A scripts/build_npm.ts
+    files:
+      - npm/**/*
+      - README.md
+      - LICENSE
+
+# Publish to Deno.land/x (legacy)
+denox:
+  - id: denox-publish
+    name: myapp
+    # Deno.land/x uses GitHub releases
+    # Just ensure proper tagging
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+    wrap_in_directory: true
+
+  - id: source-bundle
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+    files:
+      - src/**/*
+      - deno.json
+      - deno.lock
+      - import_map.json
+      - LICENSE
+      - README.md
+
+nfpms:
+  - id: deno-packages
+    package_name: myapp-deno
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: MyCompany
+    maintainer: developer@example.com
+    description: A Deno CLI application
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    contents:
+      - src: ./dist/linux_amd64/myapp
+        dst: /usr/bin/myapp
+        type: file
+      - src: ./completions/myapp.bash
+        dst: /usr/share/bash-completion/completions/myapp
+        type: file
+      - src: ./completions/myapp.zsh
+        dst: /usr/share/zsh/site-functions/_myapp
+        type: file
+    scripts:
+      postinstall: scripts/postinstall.sh
+
+# Flatpak
+flatpaks:
+  - id: deno-flatpak
+    runtime: org.freedesktop.Platform
+    runtime_version: "23.08"
+    sdk: org.freedesktop.Sdk
+    app_id: com.mycompany.myapp
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage
+appimages:
+  - id: deno-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Development;Utility"
+
+# Windows installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Deno
+    installer_name: "myapp-deno-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: user
+    contents:
+      - src: ./dist/windows_amd64/myapp.exe
+        dst: myapp.exe
+      - src: ./README.md
+        dst: README.txt
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+
+dockers:
+  - id: deno-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+  # Alpine-based slim image
+  - id: deno-docker-slim
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}-slim"
+    dockerfile: Dockerfile.slim
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+# Deploy to Deno Deploy
+deno_deploy:
+  - id: deno-deploy
+    project: myapp
+    entrypoint: src/main.ts
+    api_token: "{{ .Env.DENO_DEPLOY_TOKEN }}"
+    production: true
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: cosign
+    cmd: cosign
+    certificate: "${certificate}"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: Documentation
+      regexp: "^docs:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+
+brews:
+  - name: myapp-deno
+    description: A Deno CLI application
+    homepage: https://github.com/user/myapp-deno
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+aurs:
+  - name: myapp-deno
+    description: A Deno CLI application
+    homepage: https://github.com/user/myapp-deno
+    license: MIT
+    maintainers:
+      - "Developer <developer@example.com>"
+    git_url: ssh://aur@aur.archlinux.org/myapp-deno.git
+    depends:
+      - deno
+    package: |
+      cd "$srcdir/$pkgname-$pkgver"
+      install -Dm755 myapp "$pkgdir/usr/bin/myapp"
+
+scoops:
+  - name: myapp-deno
+    description: A Deno CLI application
+    homepage: https://github.com/user/myapp-deno
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-deno
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Deno CLI application
+    license: MIT
+    repository:
+      owner: user
+      name: winget-pkgs

@@ -37,6 +37,18 @@ const (
 	TypeNSIS            Type = "NSIS"
 	TypeAppBundle       Type = "App Bundle"
 	TypeUniversalBinary Type = "Universal Binary"
+	TypeFlatpak         Type = "Flatpak"
+	TypeAppImage        Type = "AppImage"
+	TypeSnap            Type = "Snap"
+	TypeChocolatey      Type = "Chocolatey"
+	TypeWinget          Type = "Winget"
+	TypeAUR             Type = "AUR"
+	TypeCrate           Type = "Crate"
+	TypePyPI            Type = "PyPI"
+	TypeMaven           Type = "Maven"
+	TypeNuGet           Type = "NuGet"
+	TypeGem             Type = "Gem"
+	TypeHelm            Type = "Helm"
 )
 
 // Artifact represents a build artifact

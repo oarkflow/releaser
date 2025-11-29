@@ -1,0 +1,359 @@
+# Releaser configuration for Flutter/Dart projects
+# Supports mobile (iOS/Android), desktop, and web builds
+
+version: 2
+
+project_name: myapp_flutter
+
+defaults:
+  homepage: https://github.com/user/myapp_flutter
+  description: A Flutter application built with Releaser
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - FLUTTER_ROOT={{ .Env.FLUTTER_ROOT }}
+  - PUB_DEV_TOKEN={{ .Env.PUB_DEV_TOKEN }}
+  - ANDROID_SDK_ROOT={{ .Env.ANDROID_SDK_ROOT }}
+
+variables:
+  owner: user
+  repo: myapp_flutter
+  app_id: com.mycompany.myapp
+
+before:
+  hooks:
+    - cmd: flutter pub get
+    - cmd: flutter analyze
+    - cmd: flutter test
+
+builds:
+  # Android APK builds
+  - id: flutter-android-apk
+    builder: custom
+    command: |
+      flutter build apk --release --split-per-abi
+      mkdir -p ./dist/android
+      cp build/app/outputs/flutter-apk/*.apk ./dist/android/
+    goos:
+      - android
+    goarch:
+      - arm64
+      - arm
+      - amd64
+
+  # Android App Bundle (for Play Store)
+  - id: flutter-android-aab
+    builder: custom
+    command: |
+      flutter build appbundle --release
+      mkdir -p ./dist/android
+      cp build/app/outputs/bundle/release/app-release.aab ./dist/android/
+    goos:
+      - android
+    goarch:
+      - all  # Universal bundle
+
+  # iOS build (requires macOS)
+  - id: flutter-ios
+    builder: custom
+    command: |
+      flutter build ios --release --no-codesign
+      mkdir -p ./dist/ios
+      # Create IPA for distribution
+      cd build/ios/iphoneos
+      mkdir Payload
+      cp -r Runner.app Payload/
+      zip -r ../../../dist/ios/myapp.ipa Payload
+    goos:
+      - darwin  # Build on macOS for iOS
+    goarch:
+      - arm64
+
+  # macOS desktop build
+  - id: flutter-macos
+    builder: custom
+    command: |
+      flutter build macos --release
+      mkdir -p ./dist/macos
+      cp -r "build/macos/Build/Products/Release/MyApp.app" ./dist/macos/
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  # Windows desktop build
+  - id: flutter-windows
+    builder: custom
+    command: |
+      flutter build windows --release
+      mkdir -p ./dist/windows
+      cp -r build/windows/x64/runner/Release/* ./dist/windows/
+    goos:
+      - windows
+    goarch:
+      - amd64
+
+  # Linux desktop build
+  - id: flutter-linux
+    builder: custom
+    command: |
+      flutter build linux --release
+      mkdir -p ./dist/linux
+      cp -r build/linux/x64/release/bundle/* ./dist/linux/
+    goos:
+      - linux
+    goarch:
+      - amd64
+
+  # Web build
+  - id: flutter-web
+    builder: custom
+    command: |
+      flutter build web --release --web-renderer canvaskit
+      mkdir -p ./dist/web
+      cp -r build/web/* ./dist/web/
+    goos:
+      - js
+    goarch:
+      - wasm
+
+# Dart/Flutter package publishing to pub.dev
+pubdev:
+  - id: pub-publish
+    name: myapp_flutter
+    api_token: "{{ .Env.PUB_DEV_TOKEN }}"
+    dry_run: false
+    # Package files
+    files:
+      - lib/**/*
+      - pubspec.yaml
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+archives:
+  - id: android-bundle
+    format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_android"
+    files:
+      - dist/android/*.apk
+      - dist/android/*.aab
+      - README.md
+      - LICENSE
+
+  - id: ios-bundle
+    format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_ios"
+    files:
+      - dist/ios/*.ipa
+      - README.md
+
+  - id: desktop-bundle
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+  - id: web-bundle
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_web"
+    files:
+      - dist/web/**/*
+      - LICENSE
+
+# macOS DMG installer
+dmgs:
+  - id: macos-dmg
+    name: MyApp
+    icon: assets/icon.icns
+    background: assets/dmg-background.png
+    window_size:
+      width: 600
+      height: 400
+    contents:
+      - src: ./dist/macos/MyApp.app
+        x: 150
+        y: 200
+      - type: link
+        path: /Applications
+        x: 450
+        y: 200
+
+# Windows NSIS installer
+nsiss:
+  - id: windows-installer
+    name: MyApp Flutter
+    installer_name: "myapp-flutter-{{ .Version }}-setup"
+    install_dir: "$PROGRAMFILES\\MyApp"
+    request_execution_level: admin
+    contents:
+      - src: ./dist/windows/*
+        dst: .
+    scripts:
+      install: |
+        CreateShortCut "$DESKTOP\MyApp.lnk" "$INSTDIR\myapp.exe"
+        CreateShortCut "$SMPROGRAMS\MyApp.lnk" "$INSTDIR\myapp.exe"
+      uninstall: |
+        Delete "$DESKTOP\MyApp.lnk"
+        Delete "$SMPROGRAMS\MyApp.lnk"
+
+# Linux Snap package
+snaps:
+  - id: flutter-snap
+    name: myapp
+    base: core22
+    grade: stable
+    confinement: strict
+    summary: A Flutter desktop application
+    description: |
+      MyApp is a cross-platform application built with Flutter.
+    apps:
+      myapp:
+        command: myapp
+        extensions:
+          - gnome
+        plugs:
+          - home
+          - network
+          - desktop
+          - desktop-legacy
+          - wayland
+          - x11
+
+# Flatpak for Linux desktop
+flatpaks:
+  - id: flutter-flatpak
+    runtime: org.gnome.Platform
+    runtime_version: "45"
+    sdk: org.gnome.Sdk
+    app_id: "{{ .Var.app_id }}"
+    branch: stable
+    command: myapp
+    finish_args:
+      - "--share=ipc"
+      - "--socket=fallback-x11"
+      - "--socket=wayland"
+      - "--device=dri"
+      - "--share=network"
+      - "--filesystem=home"
+    modules:
+      - myapp
+
+# AppImage for portable Linux
+appimages:
+  - id: flutter-appimage
+    name: MyApp
+    icon: assets/icon.png
+    desktop_file: assets/myapp.desktop
+    categories: "Utility;Application"
+
+dockers:
+  - id: flutter-web-docker
+    image_templates:
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:{{ .Version }}"
+      - "ghcr.io/{{ .Env.GITHUB_OWNER }}/{{ .ProjectName }}:latest"
+    dockerfile: Dockerfile.web
+    build_flag_templates:
+      - "--build-arg=VERSION={{ .Version }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - id: cosign
+    cmd: cosign
+    certificate: "${certificate}"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat:"
+    - title: Bug Fixes
+      regexp: "^fix:"
+    - title: UI/UX
+      regexp: "^ui:"
+
+release:
+  github:
+    owner: "{{ .Env.GITHUB_OWNER }}"
+    name: "{{ .Env.GITHUB_REPO }}"
+  draft: false
+  prerelease: auto
+  extra_files:
+    - glob: "./dist/android/*.apk"
+    - glob: "./dist/android/*.aab"
+    - glob: "./dist/ios/*.ipa"
+
+# Announce release
+announce:
+  slack:
+    enabled: true
+    channel: "#releases"
+    message_template: |
+      🚀 {{ .ProjectName }} {{ .Version }} released!
+
+      📱 Android APK/AAB available
+      🍎 iOS IPA available
+      🖥️ Desktop builds for Windows, macOS, Linux
+      🌐 Web version deployed
+
+      {{ .ReleaseURL }}
+
+  discord:
+    enabled: true
+    message_template: |
+      🎉 **{{ .ProjectName }} {{ .Version }}** is out!
+      {{ .ReleaseURL }}
+
+brews:
+  - name: myapp-flutter
+    description: A Flutter desktop application
+    homepage: https://github.com/user/myapp_flutter
+    license: MIT
+    repository:
+      owner: user
+      name: homebrew-tap
+    dependencies:
+      - name: flutter
+        type: build
+    caveats: |
+      This is the desktop version of MyApp.
+      For mobile versions, download from the release page.
+    install: |
+      bin.install "myapp"
+    test: |
+      system "#{bin}/myapp", "--version"
+
+scoops:
+  - name: myapp-flutter
+    description: A Flutter desktop application
+    homepage: https://github.com/user/myapp_flutter
+    license: MIT
+    repository:
+      owner: user
+      name: scoop-bucket
+
+wingets:
+  - name: myapp-flutter
+    publisher: MyCompany
+    publisher_url: https://mycompany.com
+    short_description: A Flutter desktop application
+    license: MIT
+    repository:
+      owner: user
+      name: winget-pkgs
