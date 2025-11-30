@@ -1,0 +1,293 @@
+# Multi-Binary Application Example
+# Demonstrates building both CLI and GUI applications in a single release
+
+version: 2
+
+project_name: myapp
+
+defaults:
+  homepage: https://github.com/example/myapp
+  description: A multi-binary application with CLI and GUI components
+  license: MIT
+  maintainer: developer@example.com
+
+env:
+  - GO111MODULE=on
+
+# Define multiple builds: CLI tool and GUI application
+builds:
+  # CLI binary - installed to /usr/bin, available in PATH
+  - id: cli
+    main: ./cmd/cli
+    binary: myapp
+    type: cli  # CLI type installs to system PATH
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=0
+
+  # GUI binary - installed as desktop application with menu entry
+  # CGO is enabled for GUI because Fyne requires it
+  # NOTE: Cross-compiling GUI apps with Fyne requires platform SDK headers.
+  # - Windows: Works with zig cross-compiler
+  # - macOS: Requires osxcross with macOS SDK
+  # - Linux ARM64: Requires cross-compiled X11/GL dev headers
+  # For full cross-platform GUI builds, use fyne-cross or build on each platform.
+  - id: gui
+    main: ./cmd/gui
+    binary: myapp-gui
+    type: gui  # GUI type creates desktop entries and app bundles
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+    # Cross-compiled GUI builds are complex - limit to native + windows
+    # For full cross-platform support, use fyne-cross tool
+    ignore:
+      - goos: darwin  # Requires osxcross with macOS SDK
+      - goarch: arm64  # Requires cross-compiled X11 headers
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    flags:
+      - -trimpath
+    # Enable CGO for Fyne GUI
+    cgo:
+      enabled: true
+      # Cross-compilers for different platforms
+      # Zig is recommended as a universal cross-compiler
+      cross_compilers:
+        windows_amd64:
+          cc: zig cc -target x86_64-windows-gnu
+          cxx: zig c++ -target x86_64-windows-gnu
+    # GUI-specific metadata
+    gui:
+      name: "MyApp"
+      icon: "icons/myapp.png"
+      comment: "MyApp GUI - A graphical interface for MyApp"
+      generic_name: "Application Manager"
+      categories:
+        - Utility
+        - Development
+      keywords:
+        - myapp
+        - utility
+        - gui
+      startup_notify: true
+      terminal: false
+      mime_types:
+        - application/x-myapp
+      # macOS specific
+      macos:
+        bundle_id: "com.example.myapp"
+        minimum_system_version: "10.13"
+        high_resolution_capable: true
+        info_plist:
+          NSHumanReadableCopyright: "Copyright © 2025 Example Inc."
+      # Windows specific
+      windows:
+        icon: "icons/myapp.ico"
+        start_menu_folder: "MyApp"
+        desktop_shortcut: true
+        file_associations:
+          - extension: ".myapp"
+            description: "MyApp Document"
+
+# Archives for distribution
+archives:
+  - id: cli-archive
+    builds:
+      - cli
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+
+  - id: gui-archive
+    builds:
+      - gui
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}-gui_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+      - icons/*
+
+# Linux packages - includes both CLI and GUI
+nfpms:
+  - id: all-packages
+    package_name: myapp
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: Example Inc.
+    maintainer: developer@example.com
+    description: |
+      MyApp - A multi-binary application
+      Includes:
+        - myapp: Command-line interface
+        - myapp-gui: Graphical user interface
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+    # The GUI binary will automatically get a .desktop file generated
+    contents:
+      # Additional config files
+      - src: ./config.example.yaml
+        dst: /etc/myapp/config.yaml
+        type: config|noreplace
+    # Dependencies vary by package format:
+    # - deb: libgtk-3-0, libgl1
+    # - rpm: gtk3, mesa-libGL
+    # - apk: gtk+3.0, mesa-gl
+    overrides:
+      deb:
+        dependencies:
+          - libgtk-3-0
+          - libgl1
+      rpm:
+        dependencies:
+          - gtk3
+          - mesa-libGL
+      apk:
+        dependencies:
+          - gtk+3.0
+          - mesa-gl
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+# macOS App Bundle for GUI
+app_bundles:
+  - id: gui-app
+    builds:
+      - gui
+    name: "MyApp"
+    identifier: "com.example.myapp"
+    icon: "icons/myapp.icns"
+    category: "public.app-category.utilities"
+    high_resolution_capable: true
+    minimum_system_version: "10.13"
+    info_plist:
+      NSHumanReadableCopyright: "Copyright © 2025 Example Inc."
+      CFBundleShortVersionString: "{{ .Version }}"
+
+# macOS DMG with App Bundle
+dmgs:
+  - id: gui-dmg
+    builds:
+      - gui
+    name: "MyApp"
+    name_template: "{{ .ProjectName }}_{{ .Version }}_macOS"
+    title: "MyApp {{ .Version }}"
+    window_size:
+      width: 660
+      height: 400
+    contents:
+      - type: app
+        path: "MyApp.app"
+      - type: link
+        path: /Applications
+
+# macOS PKG for GUI
+pkgs:
+  - id: gui-pkg
+    name: "MyApp"
+    identifier: "com.example.myapp.pkg"
+    install_location: "/Applications"
+
+# Windows MSI Installer
+msis:
+  - id: windows-installer
+    builds:
+      - cli
+      - gui
+    name: "MyApp"
+    manufacturer: "Example Inc."
+    product_version: "{{ .Version }}"
+    upgrade_code: "12345678-1234-1234-1234-123456789012"
+    install_dir: "MyApp"
+    icon: "icons/myapp.ico"
+
+# Windows NSIS Installer (alternative to MSI)
+nsiss:
+  - id: windows-nsis
+    builds:
+      - cli
+      - gui
+    name: "MyApp"
+    license: "LICENSE"
+    icon: "icons/myapp.ico"
+
+# Checksums
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Homebrew for macOS CLI
+brews:
+  - name: myapp
+    repository:
+      owner: example
+      name: homebrew-tap
+    folder: Formula
+    homepage: https://github.com/example/myapp
+    description: MyApp CLI - A command-line utility
+    license: MIT
+    test: |
+      system "#{bin}/myapp", "--version"
+    install: |
+      bin.install "myapp"
+
+# Scoop for Windows CLI
+scoops:
+  - repository:
+      owner: example
+      name: scoop-bucket
+    homepage: https://github.com/example/myapp
+    description: MyApp CLI - A command-line utility
+    license: MIT
+
+# Changelog
+changelog:
+  sort: asc
+  use: conventional
+  groups:
+    - title: "Features"
+      regexp: "^feat"
+      order: 0
+    - title: "Bug Fixes"
+      regexp: "^fix"
+      order: 1
+
+# Release configuration
+release:
+  github:
+    owner: example
+    name: myapp
+  draft: false
+  prerelease: auto
+  name_template: "{{.ProjectName}} v{{.Version}}"

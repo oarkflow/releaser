@@ -33,6 +33,7 @@ const (
 	TypeScoopManifest   Type = "Scoop Manifest"
 	TypeNPMPackage      Type = "NPM Package"
 	TypeDMG             Type = "DMG"
+	TypePKG             Type = "PKG"
 	TypeMSI             Type = "MSI"
 	TypeNSIS            Type = "NSIS"
 	TypeAppBundle       Type = "App Bundle"
@@ -225,6 +226,20 @@ func (m *Manager) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.artifacts = make([]Artifact, 0)
+}
+
+// Remove removes artifacts matching the filter
+func (m *Manager) Remove(filter FilterFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]Artifact, 0, len(m.artifacts))
+	for _, a := range m.artifacts {
+		if !filter(a) {
+			result = append(result, a)
+		}
+	}
+	m.artifacts = result
 }
 
 // GroupByPlatform groups artifacts by platform (goos/goarch)

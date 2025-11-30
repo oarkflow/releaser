@@ -9,6 +9,8 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
+
+	"github.com/oarkflow/releaser/internal/deps"
 )
 
 var (
@@ -25,6 +27,8 @@ var (
 	snapshot     bool
 	nightly      bool
 	singleTarget string
+	autoInstall  bool
+	skipInstall  bool
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -59,6 +63,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug output")
 	rootCmd.PersistentFlags().IntVarP(&parallelism, "parallelism", "p", 4, "number of parallel tasks")
 	rootCmd.PersistentFlags().StringVar(&timeout, "timeout", "60m", "timeout for the entire release")
+	rootCmd.PersistentFlags().BoolVar(&autoInstall, "auto-install", false, "automatically install missing dependencies without prompting")
+	rootCmd.PersistentFlags().BoolVar(&skipInstall, "skip-install", false, "skip dependency installation prompts")
 
 	// Add subcommands
 	rootCmd.AddCommand(releaseCmd)
@@ -79,6 +85,15 @@ func initConfig() {
 		log.SetLevel(log.InfoLevel)
 	} else {
 		log.SetLevel(log.WarnLevel)
+	}
+
+	// Configure dependency installation behavior
+	if autoInstall {
+		deps.AutoInstall = true
+		deps.PromptForInstall = false
+	} else if skipInstall {
+		deps.AutoInstall = false
+		deps.PromptForInstall = false
 	}
 
 	if cfgFile != "" {

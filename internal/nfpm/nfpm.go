@@ -18,10 +18,11 @@ import (
 
 // Packager creates Linux packages.
 type Packager struct {
-	config  config.NFPM
-	tmplCtx *tmpl.Context
-	manager *artifact.Manager
-	distDir string
+	config     config.NFPM
+	allConfigs *config.Config
+	tmplCtx    *tmpl.Context
+	manager    *artifact.Manager
+	distDir    string
 }
 
 // NewPackager creates a new nfpm packager.
@@ -31,6 +32,17 @@ func NewPackager(cfg config.NFPM, tmplCtx *tmpl.Context, manager *artifact.Manag
 		tmplCtx: tmplCtx,
 		manager: manager,
 		distDir: distDir,
+	}
+}
+
+// NewPackagerWithConfig creates a new nfpm packager with full config access.
+func NewPackagerWithConfig(cfg config.NFPM, allConfigs *config.Config, tmplCtx *tmpl.Context, manager *artifact.Manager, distDir string) *Packager {
+	return &Packager{
+		config:     cfg,
+		allConfigs: allConfigs,
+		tmplCtx:    tmplCtx,
+		manager:    manager,
+		distDir:    distDir,
 	}
 }
 
@@ -44,10 +56,29 @@ func (p *Packager) Build(ctx context.Context) error {
 	log.Info("Building Linux packages with nfpm")
 
 	// Get binary artifacts
-	binaries := p.manager.Filter(artifact.ByType(artifact.TypeBinary))
+	allBinaries := p.manager.Filter(artifact.ByType(artifact.TypeBinary))
 
-	if len(binaries) == 0 {
+	if len(allBinaries) == 0 {
 		log.Warn("No binaries found for packaging")
+		return nil
+	}
+
+	// Filter and group linux binaries by architecture
+	archBinaries := make(map[string][]artifact.Artifact)
+	for _, binary := range allBinaries {
+		// Only package linux binaries
+		if binary.Goos != "" && binary.Goos != "linux" {
+			continue
+		}
+		arch := binary.Goarch
+		if arch == "" {
+			arch = "amd64"
+		}
+		archBinaries[arch] = append(archBinaries[arch], binary)
+	}
+
+	if len(archBinaries) == 0 {
+		log.Warn("No Linux binaries found for packaging")
 		return nil
 	}
 
@@ -57,15 +88,11 @@ func (p *Packager) Build(ctx context.Context) error {
 		formats = []string{"deb", "rpm"}
 	}
 
-	for _, binary := range binaries {
-		// Only package linux binaries
-		if binary.Goos != "" && binary.Goos != "linux" {
-			continue
-		}
-
+	// Build a single package per architecture containing ALL binaries
+	for arch, binaries := range archBinaries {
 		for _, format := range formats {
-			if err := p.buildPackage(ctx, binary, format); err != nil {
-				return fmt.Errorf("failed to build %s package for %s: %w", format, binary.Name, err)
+			if err := p.buildPackageWithBinaries(ctx, binaries, arch, format); err != nil {
+				return fmt.Errorf("failed to build %s package for %s: %w", format, arch, err)
 			}
 		}
 	}
@@ -74,9 +101,9 @@ func (p *Packager) Build(ctx context.Context) error {
 	return nil
 }
 
-// buildPackage builds a single package using nfpm CLI or fpm.
-func (p *Packager) buildPackage(ctx context.Context, binary artifact.Artifact, format string) error {
-	log.Debug("Building package", "binary", binary.Name, "format", format)
+// buildPackageWithBinaries builds a single package containing multiple binaries.
+func (p *Packager) buildPackageWithBinaries(ctx context.Context, binaries []artifact.Artifact, arch, format string) error {
+	log.Debug("Building package", "arch", arch, "format", format, "binaries", len(binaries))
 
 	// Prepare package name
 	pkgName := p.config.PackageName
@@ -88,27 +115,23 @@ func (p *Packager) buildPackage(ctx context.Context, binary artifact.Artifact, f
 	version := p.tmplCtx.Get("Version")
 	version = strings.TrimPrefix(version, "v")
 
-	// Prepare architecture
-	arch := binary.Goarch
-	if arch == "" {
-		arch = "amd64"
-	}
-	arch = normalizeArch(arch, format)
+	// Normalize architecture for package format
+	normalizedArch := normalizeArch(arch, format)
 
 	// Generate nfpm config file
-	nfpmConfigPath := filepath.Join(p.distDir, fmt.Sprintf("nfpm-%s-%s.yaml", binary.Name, format))
-	if err := p.generateNfpmConfig(nfpmConfigPath, binary, pkgName, version, arch, format); err != nil {
+	nfpmConfigPath := filepath.Join(p.distDir, fmt.Sprintf("nfpm-%s-%s.yaml", normalizedArch, format))
+	if err := p.generateNfpmConfigMulti(nfpmConfigPath, binaries, pkgName, version, normalizedArch, format); err != nil {
 		return fmt.Errorf("failed to generate nfpm config: %w", err)
 	}
 
 	// Generate output filename
-	outputName := fmt.Sprintf("%s_%s_%s.%s", pkgName, version, arch, format)
+	outputName := fmt.Sprintf("%s_%s_%s.%s", pkgName, version, normalizedArch, format)
 	outputPath := filepath.Join(p.distDir, outputName)
 
 	// Try nfpm first, then fpm
 	if err := p.runNfpm(ctx, nfpmConfigPath, outputPath, format); err != nil {
 		log.Debug("nfpm not available, trying fpm", "error", err)
-		if err := p.runFpm(ctx, binary, pkgName, version, arch, outputPath, format); err != nil {
+		if err := p.runFpmMulti(ctx, binaries, pkgName, version, normalizedArch, outputPath, format); err != nil {
 			return fmt.Errorf("failed to create package (neither nfpm nor fpm worked): %w", err)
 		}
 	}
@@ -119,14 +142,142 @@ func (p *Packager) buildPackage(ctx context.Context, binary artifact.Artifact, f
 		Path:   outputPath,
 		Type:   artifact.TypeLinuxPackage,
 		Goos:   "linux",
-		Goarch: binary.Goarch,
+		Goarch: arch,
 		Extra: map[string]interface{}{
 			"format": format,
 		},
 	})
 
-	log.Info("Package created", "name", outputName)
+	log.Info("Package created", "name", outputName, "binaries", len(binaries))
 	return nil
+}
+
+// buildPackage builds a single package using nfpm CLI or fpm.
+func (p *Packager) buildPackage(ctx context.Context, binary artifact.Artifact, format string) error {
+	return p.buildPackageWithBinaries(ctx, []artifact.Artifact{binary}, binary.Goarch, format)
+}
+
+// generateNfpmConfigMulti generates an nfpm configuration file for multiple binaries.
+func (p *Packager) generateNfpmConfigMulti(path string, binaries []artifact.Artifact, name, version, arch, format string) error {
+	configTemplate := `name: "{{ .Name }}"
+arch: "{{ .Arch }}"
+platform: "linux"
+version: "{{ .Version }}"
+maintainer: "{{ .Maintainer }}"
+description: "{{ .Description }}"
+vendor: "{{ .Vendor }}"
+homepage: "{{ .Homepage }}"
+license: "{{ .License }}"
+
+contents:
+{{ range .Binaries }}
+  - src: "{{ .Path }}"
+    dst: "{{ $.Bindir }}/{{ .Name }}"
+    type: file
+    file_info:
+      mode: 0755
+{{ end }}
+{{ range .GUIEntries }}
+  - src: "{{ .DesktopFile }}"
+    dst: "/usr/share/applications/{{ .AppID }}.desktop"
+    type: file
+{{ if .IconPath }}
+  - src: "{{ .IconPath }}"
+    dst: "/usr/share/icons/hicolor/256x256/apps/{{ .AppID }}.png"
+    type: file
+{{ end }}
+{{ end }}
+{{ range .Contents }}
+  - src: "{{ .Src }}"
+    dst: "{{ .Dst }}"
+{{ if .Type }}
+    type: {{ .Type }}
+{{ end }}
+{{ end }}
+{{ if .Dependencies }}
+depends:
+{{ range .Dependencies }}
+  - "{{ . }}"
+{{ end }}
+{{ end }}
+`
+
+	tmpl, err := template.New("nfpm").Parse(configTemplate)
+	if err != nil {
+		return err
+	}
+
+	bindir := p.config.Bindir
+	if bindir == "" {
+		bindir = "/usr/bin"
+	}
+
+	// Collect GUI entries for all GUI binaries
+	type guiEntry struct {
+		AppID       string
+		DesktopFile string
+		IconPath    string
+	}
+	var guiEntries []guiEntry
+
+	for _, binary := range binaries {
+		// Check if this is a GUI application
+		isGUI := false
+		var guiConfig *config.GUIConfig
+		appID := binary.Name
+
+		if p.allConfigs != nil {
+			for _, build := range p.allConfigs.Builds {
+				if build.ID == binary.BuildID && build.Type == "gui" {
+					isGUI = true
+					guiConfig = build.GUI
+					break
+				}
+			}
+		}
+
+		if isGUI {
+			iconPath := ""
+			if guiConfig != nil && guiConfig.Icon != "" {
+				iconPath = guiConfig.Icon
+			}
+
+			desktopFile := filepath.Join(p.distDir, appID+".desktop")
+			if err := p.generateDesktopFile(desktopFile, binary, guiConfig, bindir); err != nil {
+				log.Warn("Failed to generate desktop file", "binary", binary.Name, "error", err)
+			} else {
+				guiEntries = append(guiEntries, guiEntry{
+					AppID:       appID,
+					DesktopFile: desktopFile,
+					IconPath:    iconPath,
+				})
+			}
+		}
+	}
+
+	data := map[string]interface{}{
+		"Name":         name,
+		"Arch":         arch,
+		"Version":      version,
+		"Maintainer":   p.config.Maintainer,
+		"Description":  p.config.Description,
+		"Vendor":       p.config.Vendor,
+		"Homepage":     p.config.Homepage,
+		"License":      p.config.License,
+		"Binaries":     binaries,
+		"Bindir":       bindir,
+		"Contents":     p.config.Contents,
+		"Dependencies": p.config.Dependencies,
+		"GUIEntries":   guiEntries,
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return tmpl.Execute(f, data)
 }
 
 // generateNfpmConfig generates an nfpm configuration file.
@@ -147,9 +298,22 @@ contents:
     type: file
     file_info:
       mode: 0755
+{{ if .IsGUI }}
+  - src: "{{ .DesktopFile }}"
+    dst: "/usr/share/applications/{{ .AppID }}.desktop"
+    type: file
+{{ if .IconPath }}
+  - src: "{{ .IconPath }}"
+    dst: "/usr/share/icons/hicolor/256x256/apps/{{ .AppID }}.png"
+    type: file
+{{ end }}
+{{ end }}
 {{ range .Contents }}
   - src: "{{ .Src }}"
     dst: "{{ .Dst }}"
+{{ if .Type }}
+    type: {{ .Type }}
+{{ end }}
 {{ end }}
 {{ if .Dependencies }}
 depends:
@@ -169,6 +333,35 @@ depends:
 		bindir = "/usr/bin"
 	}
 
+	// Check if this is a GUI application
+	isGUI := false
+	var guiConfig *config.GUIConfig
+	appID := name
+	desktopFile := ""
+	iconPath := ""
+
+	if p.allConfigs != nil {
+		for _, build := range p.allConfigs.Builds {
+			if build.ID == binary.BuildID && build.Type == "gui" {
+				isGUI = true
+				guiConfig = build.GUI
+				if guiConfig != nil && guiConfig.Icon != "" {
+					iconPath = guiConfig.Icon
+				}
+				break
+			}
+		}
+	}
+
+	// Generate desktop file for GUI apps
+	if isGUI {
+		desktopFile = filepath.Join(p.distDir, appID+".desktop")
+		if err := p.generateDesktopFile(desktopFile, binary, guiConfig, bindir); err != nil {
+			log.Warn("Failed to generate desktop file", "error", err)
+			isGUI = false // Fall back to non-GUI mode
+		}
+	}
+
 	data := map[string]interface{}{
 		"Name":         name,
 		"Arch":         arch,
@@ -183,6 +376,90 @@ depends:
 		"Bindir":       bindir,
 		"Contents":     p.config.Contents,
 		"Dependencies": p.config.Dependencies,
+		"IsGUI":        isGUI,
+		"AppID":        appID,
+		"DesktopFile":  desktopFile,
+		"IconPath":     iconPath,
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return tmpl.Execute(f, data)
+}
+
+// generateDesktopFile creates a .desktop file for GUI applications
+func (p *Packager) generateDesktopFile(path string, binary artifact.Artifact, guiConfig *config.GUIConfig, bindir string) error {
+	desktopTemplate := `[Desktop Entry]
+Type=Application
+Name={{ .Name }}
+{{ if .GenericName }}GenericName={{ .GenericName }}
+{{ end }}{{ if .Comment }}Comment={{ .Comment }}
+{{ end }}Exec={{ .Exec }}
+{{ if .Icon }}Icon={{ .Icon }}
+{{ end }}Terminal={{ .Terminal }}
+{{ if .Categories }}Categories={{ .Categories }}
+{{ end }}{{ if .Keywords }}Keywords={{ .Keywords }}
+{{ end }}{{ if .MimeTypes }}MimeType={{ .MimeTypes }}
+{{ end }}StartupNotify={{ .StartupNotify }}
+`
+
+	tmpl, err := template.New("desktop").Parse(desktopTemplate)
+	if err != nil {
+		return err
+	}
+
+	name := binary.Name
+	comment := p.config.Description
+	categories := "Utility;"
+	keywords := ""
+	genericName := ""
+	icon := binary.Name
+	terminal := "false"
+	startupNotify := "true"
+	mimeTypes := ""
+
+	if guiConfig != nil {
+		if guiConfig.Name != "" {
+			name = guiConfig.Name
+		}
+		if guiConfig.Comment != "" {
+			comment = guiConfig.Comment
+		}
+		if guiConfig.GenericName != "" {
+			genericName = guiConfig.GenericName
+		}
+		if len(guiConfig.Categories) > 0 {
+			categories = strings.Join(guiConfig.Categories, ";") + ";"
+		}
+		if len(guiConfig.Keywords) > 0 {
+			keywords = strings.Join(guiConfig.Keywords, ";") + ";"
+		}
+		if guiConfig.Terminal {
+			terminal = "true"
+		}
+		if !guiConfig.StartupNotify {
+			startupNotify = "false"
+		}
+		if len(guiConfig.MimeTypes) > 0 {
+			mimeTypes = strings.Join(guiConfig.MimeTypes, ";") + ";"
+		}
+	}
+
+	data := map[string]interface{}{
+		"Name":          name,
+		"GenericName":   genericName,
+		"Comment":       comment,
+		"Exec":          filepath.Join(bindir, binary.Name),
+		"Icon":          icon,
+		"Terminal":      terminal,
+		"Categories":    categories,
+		"Keywords":      keywords,
+		"MimeTypes":     mimeTypes,
+		"StartupNotify": startupNotify,
 	}
 
 	f, err := os.Create(path)
@@ -253,6 +530,55 @@ func (p *Packager) runFpm(ctx context.Context, binary artifact.Artifact, name, v
 	return cmd.Run()
 }
 
+// runFpmMulti runs fpm as a fallback for multiple binaries.
+func (p *Packager) runFpmMulti(ctx context.Context, binaries []artifact.Artifact, name, version, arch, outputPath, format string) error {
+	bindir := p.config.Bindir
+	if bindir == "" {
+		bindir = "/usr/bin"
+	}
+
+	args := []string{
+		"-s", "dir",
+		"-t", format,
+		"-n", name,
+		"-v", version,
+		"-a", arch,
+		"-p", outputPath,
+		"--prefix", bindir,
+	}
+
+	if p.config.Description != "" {
+		args = append(args, "--description", p.config.Description)
+	}
+	if p.config.Maintainer != "" {
+		args = append(args, "-m", p.config.Maintainer)
+	}
+	if p.config.Homepage != "" {
+		args = append(args, "--url", p.config.Homepage)
+	}
+	if p.config.License != "" {
+		args = append(args, "--license", p.config.License)
+	}
+	if p.config.Vendor != "" {
+		args = append(args, "--vendor", p.config.Vendor)
+	}
+
+	// Add dependencies
+	for _, dep := range p.config.Dependencies {
+		args = append(args, "-d", dep)
+	}
+
+	// Add all binaries
+	for _, binary := range binaries {
+		args = append(args, binary.Path+"="+binary.Name)
+	}
+
+	cmd := exec.CommandContext(ctx, "fpm", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // normalizeArch normalizes Go architecture to package architecture.
 func normalizeArch(arch, format string) string {
 	switch format {
@@ -302,10 +628,11 @@ func normalizeArch(arch, format string) string {
 
 // MultiPackager builds packages for multiple configurations.
 type MultiPackager struct {
-	configs []config.NFPM
-	tmplCtx *tmpl.Context
-	manager *artifact.Manager
-	distDir string
+	configs    []config.NFPM
+	allConfigs *config.Config
+	tmplCtx    *tmpl.Context
+	manager    *artifact.Manager
+	distDir    string
 }
 
 // NewMultiPackager creates a multi-config packager.
@@ -318,11 +645,22 @@ func NewMultiPackager(configs []config.NFPM, tmplCtx *tmpl.Context, manager *art
 	}
 }
 
+// NewMultiPackagerWithConfig creates a multi-config packager with full config access.
+func NewMultiPackagerWithConfig(configs []config.NFPM, allConfigs *config.Config, tmplCtx *tmpl.Context, manager *artifact.Manager, distDir string) *MultiPackager {
+	return &MultiPackager{
+		configs:    configs,
+		allConfigs: allConfigs,
+		tmplCtx:    tmplCtx,
+		manager:    manager,
+		distDir:    distDir,
+	}
+}
+
 // BuildAll builds all package configurations.
 func (m *MultiPackager) BuildAll(ctx context.Context) error {
 	for i, cfg := range m.configs {
 		log.Info("Building packages", "index", i+1, "total", len(m.configs))
-		packager := NewPackager(cfg, m.tmplCtx, m.manager, m.distDir)
+		packager := NewPackagerWithConfig(cfg, m.allConfigs, m.tmplCtx, m.manager, m.distDir)
 		if err := packager.Build(ctx); err != nil {
 			return err
 		}

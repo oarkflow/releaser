@@ -579,3 +579,96 @@ parts:
 
 	return t.Execute(f, data)
 }
+
+// BuildAllFlatpaks builds all configured Flatpak packages
+func BuildAllFlatpaks(ctx context.Context, cfg *config.Config, tmplCtx *tmpl.Context, manager *artifact.Manager, distDir string) error {
+	if len(cfg.Flatpaks) == 0 {
+		return nil
+	}
+
+	log.Info("Building Flatpak packages", "count", len(cfg.Flatpaks))
+
+	for _, flatpakCfg := range cfg.Flatpaks {
+		if flatpakCfg.Skip == "true" {
+			log.Info("Skipping Flatpak", "id", flatpakCfg.ID)
+			continue
+		}
+
+		builder := NewFlatpakBuilder(FlatpakConfig{
+			ID:             flatpakCfg.ID,
+			AppID:          flatpakCfg.AppID,
+			Runtime:        flatpakCfg.Runtime,
+			RuntimeVersion: flatpakCfg.RuntimeVersion,
+			SDK:            flatpakCfg.SDK,
+			Command:        flatpakCfg.Command,
+			Permissions:    flatpakCfg.FinishArgs,
+		}, tmplCtx, manager, distDir)
+
+		if err := builder.Build(ctx); err != nil {
+			return fmt.Errorf("failed to build Flatpak %s: %w", flatpakCfg.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// BuildAllAppImages builds all configured AppImage packages
+func BuildAllAppImages(ctx context.Context, cfg *config.Config, tmplCtx *tmpl.Context, manager *artifact.Manager, distDir string) error {
+	if len(cfg.AppImages) == 0 {
+		return nil
+	}
+
+	log.Info("Building AppImage packages", "count", len(cfg.AppImages))
+
+	for _, appImageCfg := range cfg.AppImages {
+		if appImageCfg.Skip == "true" {
+			log.Info("Skipping AppImage", "id", appImageCfg.ID)
+			continue
+		}
+
+		// Convert categories from string to slice if needed
+		var categories []string
+		if appImageCfg.Categories != "" {
+			categories = strings.Split(appImageCfg.Categories, ";")
+		}
+
+		builder := NewAppImageBuilder(AppImageConfig{
+			ID:         appImageCfg.ID,
+			Name:       appImageCfg.Name,
+			Icon:       appImageCfg.Icon,
+			Desktop:    appImageCfg.Desktop,
+			Categories: categories,
+			ExtraFiles: appImageCfg.ExtraFiles,
+		}, tmplCtx, manager, distDir)
+
+		if err := builder.Build(ctx); err != nil {
+			return fmt.Errorf("failed to build AppImage %s: %w", appImageCfg.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// BuildAllSnaps builds all configured Snap packages
+func BuildAllSnaps(ctx context.Context, cfg *config.Config, tmplCtx *tmpl.Context, manager *artifact.Manager, distDir string) error {
+	if len(cfg.Snapcrafts) == 0 {
+		return nil
+	}
+
+	log.Info("Building Snap packages", "count", len(cfg.Snapcrafts))
+
+	for _, snapCfg := range cfg.Snapcrafts {
+		if snapCfg.Skip == "true" {
+			log.Info("Skipping Snap", "id", snapCfg.ID)
+			continue
+		}
+
+		builder := NewSnapBuilder(snapCfg, tmplCtx, manager, distDir)
+
+		if err := builder.Build(ctx); err != nil {
+			return fmt.Errorf("failed to build Snap %s: %w", snapCfg.ID, err)
+		}
+	}
+
+	return nil
+}

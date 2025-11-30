@@ -57,6 +57,42 @@ type DMG struct {
 	CodeSign            DMGCodeSign     `yaml:"code_sign,omitempty"`
 }
 
+// PKG represents macOS PKG installer configuration
+type PKG struct {
+	ID              string      `yaml:"id,omitempty"`
+	AppBundle       string      `yaml:"app_bundle,omitempty"`
+	Name            string      `yaml:"name,omitempty"`
+	NameTemplate    string      `yaml:"name_template,omitempty"`
+	Identifier      string      `yaml:"identifier,omitempty"`
+	Version         string      `yaml:"version,omitempty"`
+	InstallLocation string      `yaml:"install_location,omitempty"`
+	Scripts         PKGScripts  `yaml:"scripts,omitempty"`
+	Sign            PKGSign     `yaml:"sign,omitempty"`
+	Notarize        DMGNotarize `yaml:"notarize,omitempty"`
+	Component       bool        `yaml:"component,omitempty"`
+	Distribution    string      `yaml:"distribution,omitempty"`
+	Resources       string      `yaml:"resources,omitempty"`
+	ExtraFiles      []PKGFile   `yaml:"extra_files,omitempty"`
+}
+
+// PKGScripts for pre/post install scripts
+type PKGScripts struct {
+	PreInstall  string `yaml:"preinstall,omitempty"`
+	PostInstall string `yaml:"postinstall,omitempty"`
+}
+
+// PKGSign for PKG signing
+type PKGSign struct {
+	Identity string `yaml:"identity,omitempty"`
+	Keychain string `yaml:"keychain,omitempty"`
+}
+
+// PKGFile for extra files in PKG
+type PKGFile struct {
+	Src string `yaml:"src"`
+	Dst string `yaml:"dst,omitempty"`
+}
+
 // DMGIconPosition for icon placement
 type DMGIconPosition struct {
 	AppX          int `yaml:"app_x,omitempty"`
@@ -182,6 +218,31 @@ type DockerSign struct {
 	Cmd       string   `yaml:"cmd,omitempty"`
 	Args      []string `yaml:"args,omitempty"`
 	Env       []string `yaml:"env,omitempty"`
+	// Cosign-specific options
+	Cosign *CosignOptions `yaml:"cosign,omitempty"`
+}
+
+// CosignOptions represents cosign signing configuration
+type CosignOptions struct {
+	// Keyless uses OIDC-based keyless signing (Sigstore)
+	Keyless bool `yaml:"keyless,omitempty"`
+	// KeyRef is the path to the private key (for key-based signing)
+	KeyRef string `yaml:"key,omitempty"`
+	// Certificate is the path to the certificate
+	Certificate string `yaml:"certificate,omitempty"`
+	// CertificateChain is the path to the certificate chain
+	CertificateChain string `yaml:"certificate_chain,omitempty"`
+	// OIDC options for keyless signing
+	OIDCIssuer   string `yaml:"oidc_issuer,omitempty"`
+	OIDCClientID string `yaml:"oidc_client_id,omitempty"`
+	// RekorURL for transparency log (default: public Rekor)
+	RekorURL string `yaml:"rekor_url,omitempty"`
+	// FulcioURL for certificate authority (default: public Fulcio)
+	FulcioURL string `yaml:"fulcio_url,omitempty"`
+	// Annotations to add to the signature
+	Annotations map[string]string `yaml:"annotations,omitempty"`
+	// RecursiveSign for signing all images in a multi-arch manifest
+	Recursive bool `yaml:"recursive,omitempty"`
 }
 
 // Checksum represents checksum configuration

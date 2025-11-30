@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/log"
 
 	"github.com/oarkflow/releaser/internal/config"
+	"github.com/oarkflow/releaser/internal/deps"
 	"github.com/oarkflow/releaser/internal/tmpl"
 )
 
@@ -80,6 +82,41 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 	}
 	if target.Mips != "" {
 		env = append(env, fmt.Sprintf("GOMIPS=%s", target.Mips))
+	}
+
+	// Handle CGO configuration
+	if build.Cgo.Enabled {
+		env = append(env, "CGO_ENABLED=1")
+
+		// Get cross-compiler for this target
+		targetKey := target.OS + "_" + target.Arch
+		cc, cxx, err := b.getCrossCompiler(build.Cgo, targetKey, target.OS, target.Arch)
+		if err != nil {
+			return fmt.Errorf("CGO cross-compilation not available for %s: %w", targetKey, err)
+		}
+
+		if cc != "" {
+			env = append(env, fmt.Sprintf("CC=%s", cc))
+		}
+		if cxx != "" {
+			env = append(env, fmt.Sprintf("CXX=%s", cxx))
+		}
+
+		// Add CGO flags
+		if len(build.Cgo.CFlags) > 0 {
+			env = append(env, fmt.Sprintf("CGO_CFLAGS=%s", strings.Join(build.Cgo.CFlags, " ")))
+		}
+		if len(build.Cgo.CXXFlags) > 0 {
+			env = append(env, fmt.Sprintf("CGO_CXXFLAGS=%s", strings.Join(build.Cgo.CXXFlags, " ")))
+		}
+		if len(build.Cgo.LDFlags) > 0 {
+			env = append(env, fmt.Sprintf("CGO_LDFLAGS=%s", strings.Join(build.Cgo.LDFlags, " ")))
+		}
+
+		// Handle pkg-config
+		if len(build.Cgo.PKGConfig) > 0 {
+			env = append(env, fmt.Sprintf("PKG_CONFIG_PATH=%s", strings.Join(build.Cgo.PKGConfig, ":")))
+		}
 	}
 
 	// Add build-specific environment
@@ -220,6 +257,211 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 
 	log.Info("Built binary", "output", output)
 	return nil
+}
+
+// getCrossCompiler returns the appropriate C/C++ compiler for a target
+func (b *GoBuilder) getCrossCompiler(cgo config.CgoConfig, targetKey, goos, goarch string) (cc, cxx string, err error) {
+	hostOS := runtime.GOOS
+	hostArch := runtime.GOARCH
+
+	// Native build - no cross-compiler needed
+	if goos == hostOS && goarch == hostArch {
+		return "", "", nil
+	}
+
+	// Check for explicit cross-compiler configuration
+	if crossCompiler, ok := cgo.CrossCompilers[targetKey]; ok {
+		cc = crossCompiler.CC
+		cxx = crossCompiler.CXX
+
+		// Validate configured cross-compilers exist
+		if cc != "" {
+			// Extract just the binary name for validation
+			ccParts := strings.Fields(cc)
+			if len(ccParts) > 0 {
+				if _, err := exec.LookPath(ccParts[0]); err != nil {
+					return "", "", fmt.Errorf("configured CC %q not found", ccParts[0])
+				}
+			}
+		}
+		if cxx != "" {
+			cxxParts := strings.Fields(cxx)
+			if len(cxxParts) > 0 {
+				if _, err := exec.LookPath(cxxParts[0]); err != nil {
+					return "", "", fmt.Errorf("configured CXX %q not found", cxxParts[0])
+				}
+			}
+		}
+		return cc, cxx, nil
+	}
+
+	// Use explicitly configured CC/CXX
+	if cgo.CC != "" {
+		cc = cgo.CC
+	}
+	if cgo.CXX != "" {
+		cxx = cgo.CXX
+	}
+
+	// Auto-detect cross-compilers
+	if cc == "" {
+		cc, err = findCrossCompiler(goos, goarch, "gcc")
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if cxx == "" {
+		cxx, _ = findCrossCompiler(goos, goarch, "g++")
+	}
+
+	return cc, cxx, nil
+}
+
+// findCrossCompiler looks for an available cross-compiler
+func findCrossCompiler(goos, goarch, compiler string) (string, error) {
+	// Common cross-compiler prefixes
+	crossPrefixes := map[string]map[string]string{
+		"linux": {
+			"amd64": "x86_64-linux-gnu-",
+			"arm64": "aarch64-linux-gnu-",
+			"arm":   "arm-linux-gnueabihf-",
+			"386":   "i686-linux-gnu-",
+		},
+		"windows": {
+			"amd64": "x86_64-w64-mingw32-",
+			"386":   "i686-w64-mingw32-",
+		},
+		"darwin": {
+			// macOS cross-compilation typically uses osxcross
+			"amd64": "o64-clang",
+			"arm64": "oa64-clang",
+		},
+	}
+
+	// Look up cross-compiler prefix
+	if osPrefixes, ok := crossPrefixes[goos]; ok {
+		if prefix, ok := osPrefixes[goarch]; ok {
+			// Check if the cross-compiler exists
+			crossCC := prefix + compiler
+			if _, err := exec.LookPath(crossCC); err == nil {
+				return crossCC, nil
+			}
+
+			// For macOS with osxcross, clang doesn't have the suffix
+			if goos == "darwin" {
+				if _, err := exec.LookPath(prefix); err == nil {
+					return prefix, nil
+				}
+			}
+		}
+	}
+
+	// Try zig as a universal cross-compiler
+	if _, err := exec.LookPath("zig"); err == nil {
+		zigTarget := getZigTarget(goos, goarch)
+		if zigTarget != "" {
+			// Create a wrapper script for zig since CC can't have args
+			wrapperPath, err := createZigWrapper(zigTarget, compiler == "g++")
+			if err == nil {
+				return wrapperPath, nil
+			}
+		}
+	}
+
+	// Try to install zig as the universal cross-compiler
+	log.Info("No cross-compiler found, attempting to install zig", "target", goos+"/"+goarch)
+	if err := deps.CheckAndInstall("zig"); err == nil {
+		// Retry with zig
+		if _, err := exec.LookPath("zig"); err == nil {
+			zigTarget := getZigTarget(goos, goarch)
+			if zigTarget != "" {
+				wrapperPath, err := createZigWrapper(zigTarget, compiler == "g++")
+				if err == nil {
+					return wrapperPath, nil
+				}
+			}
+		}
+	}
+
+	// Try platform-specific cross-compilers
+	switch goos {
+	case "windows":
+		if err := deps.CheckAndInstall("mingw-w64"); err == nil {
+			crossCC := "x86_64-w64-mingw32-" + compiler
+			if goarch == "386" {
+				crossCC = "i686-w64-mingw32-" + compiler
+			}
+			if _, err := exec.LookPath(crossCC); err == nil {
+				return crossCC, nil
+			}
+		}
+	case "linux":
+		if goarch == "arm64" {
+			if err := deps.CheckAndInstall("gcc-aarch64"); err == nil {
+				crossCC := "aarch64-linux-gnu-" + compiler
+				if _, err := exec.LookPath(crossCC); err == nil {
+					return crossCC, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no cross-compiler available for %s/%s. Install zig, gcc cross-compilers, or osxcross", goos, goarch)
+}
+
+// createZigWrapper creates a wrapper script for zig cc/c++
+func createZigWrapper(target string, isCxx bool) (string, error) {
+	// Create a temporary wrapper script
+	tmpDir := os.TempDir()
+	wrapperName := fmt.Sprintf("zig-cc-%s", strings.ReplaceAll(target, "/", "-"))
+	if isCxx {
+		wrapperName = fmt.Sprintf("zig-cxx-%s", strings.ReplaceAll(target, "/", "-"))
+	}
+	wrapperPath := filepath.Join(tmpDir, wrapperName)
+
+	// Check if wrapper already exists
+	if _, err := os.Stat(wrapperPath); err == nil {
+		return wrapperPath, nil
+	}
+
+	cmd := "cc"
+	if isCxx {
+		cmd = "c++"
+	}
+
+	script := fmt.Sprintf("#!/bin/sh\nexec zig %s -target %s \"$@\"\n", cmd, target)
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		return "", err
+	}
+
+	return wrapperPath, nil
+}
+
+// getZigTarget returns the zig target triple for a platform
+func getZigTarget(goos, goarch string) string {
+	targets := map[string]map[string]string{
+		"linux": {
+			"amd64": "x86_64-linux-gnu",
+			"arm64": "aarch64-linux-gnu",
+			"arm":   "arm-linux-gnueabihf",
+			"386":   "i386-linux-gnu",
+		},
+		"darwin": {
+			"amd64": "x86_64-macos",
+			"arm64": "aarch64-macos",
+		},
+		"windows": {
+			"amd64": "x86_64-windows-gnu",
+			"386":   "i386-windows-gnu",
+		},
+	}
+
+	if osTargets, ok := targets[goos]; ok {
+		if target, ok := osTargets[goarch]; ok {
+			return target
+		}
+	}
+	return ""
 }
 
 // RustBuilder builds Rust binaries

@@ -48,8 +48,20 @@ func (c *Context) init() {
 	if c.gitInfo != nil {
 		c.data["Tag"] = c.gitInfo.CurrentTag
 		c.data["PreviousTag"] = c.gitInfo.PreviousTag
-		c.data["Version"] = strings.TrimPrefix(c.gitInfo.CurrentTag, "v")
-		c.data["RawVersion"] = c.gitInfo.CurrentTag
+
+		// Handle version - use CurrentTag if available, otherwise use Summary or SNAPSHOT
+		if c.gitInfo.CurrentTag != "" {
+			c.data["Version"] = strings.TrimPrefix(c.gitInfo.CurrentTag, "v")
+			c.data["RawVersion"] = c.gitInfo.CurrentTag
+		} else if c.gitInfo.Summary != "" {
+			// Use git describe summary when not on exact tag
+			c.data["Version"] = strings.TrimPrefix(c.gitInfo.Summary, "v")
+			c.data["RawVersion"] = c.gitInfo.Summary
+		} else {
+			c.data["Version"] = "0.0.0-SNAPSHOT"
+			c.data["RawVersion"] = "v0.0.0-SNAPSHOT"
+		}
+
 		c.data["Major"] = c.gitInfo.Major
 		c.data["Minor"] = c.gitInfo.Minor
 		c.data["Patch"] = c.gitInfo.Patch

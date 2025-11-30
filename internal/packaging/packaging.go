@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"text/template"
 
 	"github.com/charmbracelet/log"
@@ -206,23 +205,65 @@ func NewDMGBuilder(cfg config.DMG, tmplCtx *tmpl.Context, manager *artifact.Mana
 
 // Build creates a DMG disk image.
 func (b *DMGBuilder) Build(ctx context.Context) error {
-	// DMG creation requires macOS with hdiutil
-	if runtime.GOOS != "darwin" {
-		// Check if hdiutil is available (might be running via cross-compilation tools)
-		if _, err := exec.LookPath("hdiutil"); err != nil {
-			log.Warn("Skipping DMG creation: hdiutil is only available on macOS")
-			return nil
-		}
-	}
-
 	log.Info("Building DMG disk image")
 
 	// Get app bundles
 	appBundles := b.manager.Filter(artifact.ByType(artifact.TypeAppBundle))
 
 	if len(appBundles) == 0 {
-		log.Warn("No App Bundles found for DMG creation")
-		return nil
+		// Try to create app bundles first from darwin binaries
+		binaries := b.manager.Filter(func(a artifact.Artifact) bool {
+			return a.Type == artifact.TypeBinary && a.Goos == "darwin"
+		})
+		if len(binaries) == 0 {
+			log.Debug("No App Bundles or darwin binaries found for DMG creation, skipping")
+			return nil
+		}
+		// Create simple app bundles for the binaries
+		for _, binary := range binaries {
+			appName := b.tmplCtx.Get("ProjectName") + ".app"
+			appPath := filepath.Join(b.distDir, fmt.Sprintf("%s_%s", appName, binary.Goarch))
+			contentsPath := filepath.Join(appPath, "Contents")
+			macOSPath := filepath.Join(contentsPath, "MacOS")
+
+			if err := os.MkdirAll(macOSPath, 0755); err != nil {
+				return err
+			}
+
+			execPath := filepath.Join(macOSPath, filepath.Base(binary.Path))
+			if err := copyFile(binary.Path, execPath); err != nil {
+				return err
+			}
+			os.Chmod(execPath, 0755)
+
+			// Create minimal Info.plist
+			plistPath := filepath.Join(contentsPath, "Info.plist")
+			plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>%s</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.example.%s</string>
+	<key>CFBundleName</key>
+	<string>%s</string>
+	<key>CFBundleVersion</key>
+	<string>%s</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+</dict>
+</plist>`, filepath.Base(binary.Path), b.tmplCtx.Get("ProjectName"), b.tmplCtx.Get("ProjectName"), b.tmplCtx.Get("Version"))
+			os.WriteFile(plistPath, []byte(plist), 0644)
+
+			appBundles = append(appBundles, artifact.Artifact{
+				Name:   appName,
+				Path:   appPath,
+				Type:   artifact.TypeAppBundle,
+				Goos:   "darwin",
+				Goarch: binary.Goarch,
+			})
+		}
 	}
 
 	for _, app := range appBundles {
@@ -268,30 +309,70 @@ func (b *DMGBuilder) createDMG(ctx context.Context, app artifact.Artifact) error
 
 	// Add extra contents
 	for _, content := range b.config.Contents {
+		if content.Src == "" {
+			continue
+		}
 		dst := filepath.Join(tmpDir, filepath.Base(content.Src))
 		if err := copyFile(content.Src, dst); err != nil {
-			log.Warn("Failed to copy DMG content", "src", content.Src, "error", err)
+			log.Debug("Skipping DMG content", "src", content.Src, "error", err)
 		}
 	}
 
-	// Create DMG using hdiutil
-	format := b.config.Format
-	if format == "" {
-		format = "UDZO"
+	// Check if hdiutil is available
+	hdiutilAvailable := false
+	if _, err := exec.LookPath("hdiutil"); err == nil {
+		hdiutilAvailable = true
 	}
 
-	cmd := exec.CommandContext(ctx, "hdiutil", "create",
-		"-volname", dmgName,
-		"-srcfolder", tmpDir,
-		"-ov",
-		"-format", format,
-		dmgPath,
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if hdiutilAvailable {
+		// Create DMG using hdiutil (macOS native)
+		format := b.config.Format
+		if format == "" {
+			format = "UDZO"
+		}
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("hdiutil failed: %w", err)
+		cmd := exec.CommandContext(ctx, "hdiutil", "create",
+			"-volname", dmgName,
+			"-srcfolder", tmpDir,
+			"-ov",
+			"-format", format,
+			dmgPath,
+		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("hdiutil failed: %w", err)
+		}
+	} else {
+		// Fallback: create a tar.gz of the app bundle instead of DMG
+		// This allows cross-platform builds to still produce macOS packages
+		tarFileName := fmt.Sprintf("%s_%s_%s_macos.tar.gz", dmgName, version, app.Goarch)
+		tarPath := filepath.Join(b.distDir, tarFileName)
+
+		cmd := exec.CommandContext(ctx, "tar", "-czf", tarPath, "-C", filepath.Dir(app.Path), filepath.Base(app.Path))
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("tar failed: %w", err)
+		}
+
+		// Register tar.gz as the artifact instead
+		b.manager.Add(artifact.Artifact{
+			Name:   tarFileName,
+			Path:   tarPath,
+			Type:   artifact.TypeArchive,
+			Goos:   "darwin",
+			Goarch: app.Goarch,
+			Extra: map[string]interface{}{
+				"format":          "tar.gz",
+				"contains_bundle": true,
+			},
+		})
+
+		log.Info("macOS App Bundle archive created (DMG requires macOS)", "name", tarFileName)
+		return nil
 	}
 
 	// Add artifact
@@ -327,6 +408,18 @@ func NewMSIBuilder(cfg config.MSI, tmplCtx *tmpl.Context, manager *artifact.Mana
 
 // Build creates an MSI installer.
 func (b *MSIBuilder) Build(ctx context.Context) error {
+	log.Info("Building MSI installer")
+
+	// Get windows binaries
+	binaries := b.manager.Filter(func(a artifact.Artifact) bool {
+		return a.Type == artifact.TypeBinary && a.Goos == "windows"
+	})
+
+	if len(binaries) == 0 {
+		log.Debug("No Windows binaries found for MSI, skipping")
+		return nil
+	}
+
 	// Check if MSI tools are available (wixl on Linux or WiX on Windows)
 	hasWixl := false
 	hasWix := false
@@ -336,29 +429,103 @@ func (b *MSIBuilder) Build(ctx context.Context) error {
 	if _, err := exec.LookPath("candle"); err == nil {
 		hasWix = true
 	}
-	if !hasWixl && !hasWix {
-		log.Warn("Skipping MSI creation: neither wixl (msitools) nor WiX Toolset found")
-		return nil
-	}
-
-	log.Info("Building MSI installer")
-
-	// Get windows binaries
-	binaries := b.manager.Filter(func(a artifact.Artifact) bool {
-		return a.Type == artifact.TypeBinary && a.Goos == "windows"
-	})
-
-	if len(binaries) == 0 {
-		log.Warn("No Windows binaries found for MSI")
-		return nil
-	}
 
 	for _, binary := range binaries {
-		if err := b.createMSI(ctx, binary); err != nil {
-			return fmt.Errorf("failed to create MSI for %s: %w", binary.Name, err)
+		if hasWixl || hasWix {
+			if err := b.createMSI(ctx, binary); err != nil {
+				return fmt.Errorf("failed to create MSI for %s: %w", binary.Name, err)
+			}
+		} else {
+			// Create WXS file for later use on Windows, plus a ZIP installer package
+			if err := b.createWxsAndZip(ctx, binary); err != nil {
+				return fmt.Errorf("failed to create Windows package for %s: %w", binary.Name, err)
+			}
 		}
 	}
 
+	return nil
+}
+
+// createWxsAndZip creates a WXS file and ZIP package when MSI tools aren't available
+func (b *MSIBuilder) createWxsAndZip(ctx context.Context, binary artifact.Artifact) error {
+	name := b.config.Name
+	if name == "" {
+		name = b.tmplCtx.Get("ProjectName")
+	}
+
+	version := b.config.ProductVersion
+	if version == "" {
+		version = b.tmplCtx.Get("Version")
+	} else {
+		// Apply template to version string
+		expanded, err := b.tmplCtx.Apply(version)
+		if err == nil {
+			version = expanded
+		}
+	}
+
+	// Generate WiX source file for later use
+	wxsPath := filepath.Join(b.distDir, fmt.Sprintf("%s_%s.wxs", name, binary.Goarch))
+	if err := b.generateWxs(wxsPath, binary, name, version); err != nil {
+		log.Warn("Failed to generate WiX source", "error", err)
+	} else {
+		log.Info("WiX source file created (compile on Windows with WiX Toolset)", "path", wxsPath)
+	}
+
+	// Create a ZIP package as portable installer
+	zipFileName := fmt.Sprintf("%s_%s_%s_windows.zip", name, version, binary.Goarch)
+	zipPath := filepath.Join(b.distDir, zipFileName)
+
+	// Create temp directory with install structure
+	tmpDir, err := os.MkdirTemp("", "msi-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Copy binary
+	binDest := filepath.Join(tmpDir, filepath.Base(binary.Path))
+	if err := copyFile(binary.Path, binDest); err != nil {
+		return err
+	}
+
+	// Create install script
+	installScript := fmt.Sprintf(`@echo off
+echo Installing %s...
+copy /Y "%s" "%%PROGRAMFILES%%\%s\"
+echo Installation complete!
+pause
+`, name, filepath.Base(binary.Path), name)
+	os.WriteFile(filepath.Join(tmpDir, "install.bat"), []byte(installScript), 0644)
+
+	// Create ZIP
+	cmd := exec.CommandContext(ctx, "zip", "-r", zipPath, ".")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		// Fallback to tar if zip not available
+		tarPath := filepath.Join(b.distDir, fmt.Sprintf("%s_%s_%s_windows.tar.gz", name, version, binary.Goarch))
+		tarCmd := exec.CommandContext(ctx, "tar", "-czf", tarPath, "-C", tmpDir, ".")
+		if err := tarCmd.Run(); err != nil {
+			return fmt.Errorf("failed to create archive: %w", err)
+		}
+		zipPath = tarPath
+		zipFileName = filepath.Base(tarPath)
+	}
+
+	// Add artifact
+	b.manager.Add(artifact.Artifact{
+		Name:   zipFileName,
+		Path:   zipPath,
+		Type:   artifact.TypeArchive,
+		Goos:   "windows",
+		Goarch: binary.Goarch,
+		Extra: map[string]interface{}{
+			"format":    "zip",
+			"installer": true,
+		},
+	})
+
+	log.Info("Windows installer package created (MSI requires WiX Toolset)", "name", zipFileName)
 	return nil
 }
 
@@ -372,6 +539,12 @@ func (b *MSIBuilder) createMSI(ctx context.Context, binary artifact.Artifact) er
 	version := b.config.ProductVersion
 	if version == "" {
 		version = b.tmplCtx.Get("Version")
+	} else {
+		// Apply template to version string
+		expanded, err := b.tmplCtx.Apply(version)
+		if err == nil {
+			version = expanded
+		}
 	}
 
 	msiFileName := fmt.Sprintf("%s_%s_%s.msi", name, version, binary.Goarch)
@@ -513,12 +686,6 @@ func NewNSISBuilder(cfg config.NSIS, tmplCtx *tmpl.Context, manager *artifact.Ma
 
 // Build creates an NSIS installer.
 func (b *NSISBuilder) Build(ctx context.Context) error {
-	// Check if makensis is available
-	if _, err := exec.LookPath("makensis"); err != nil {
-		log.Warn("Skipping NSIS creation: makensis not found (install NSIS)")
-		return nil
-	}
-
 	log.Info("Building NSIS installer")
 
 	// Get windows binaries
@@ -527,16 +694,50 @@ func (b *NSISBuilder) Build(ctx context.Context) error {
 	})
 
 	if len(binaries) == 0 {
-		log.Warn("No Windows binaries found for NSIS")
+		log.Debug("No Windows binaries found for NSIS, skipping")
 		return nil
 	}
 
+	// Check if makensis is available
+	hasMakensis := false
+	if _, err := exec.LookPath("makensis"); err == nil {
+		hasMakensis = true
+	}
+
 	for _, binary := range binaries {
-		if err := b.createNSIS(ctx, binary); err != nil {
-			return fmt.Errorf("failed to create NSIS installer for %s: %w", binary.Name, err)
+		if hasMakensis {
+			if err := b.createNSIS(ctx, binary); err != nil {
+				return fmt.Errorf("failed to create NSIS installer for %s: %w", binary.Name, err)
+			}
+		} else {
+			// Generate NSI script for later use
+			if err := b.createNsiScript(ctx, binary); err != nil {
+				return fmt.Errorf("failed to create NSIS script for %s: %w", binary.Name, err)
+			}
 		}
 	}
 
+	return nil
+}
+
+// createNsiScript creates an NSI script when makensis isn't available
+func (b *NSISBuilder) createNsiScript(ctx context.Context, binary artifact.Artifact) error {
+	name := b.config.Name
+	if name == "" {
+		name = b.tmplCtx.Get("ProjectName")
+	}
+
+	version := b.tmplCtx.Get("Version")
+	exeFileName := fmt.Sprintf("%s_%s_%s_setup.exe", name, version, binary.Goarch)
+	exePath := filepath.Join(b.distDir, exeFileName)
+
+	// Generate NSIS script
+	nsiPath := filepath.Join(b.distDir, fmt.Sprintf("%s_%s.nsi", name, binary.Goarch))
+	if err := b.generateNsi(nsiPath, binary, name, version, exePath); err != nil {
+		return fmt.Errorf("failed to generate NSIS script: %w", err)
+	}
+
+	log.Info("NSIS script created (compile with makensis on Windows)", "path", nsiPath)
 	return nil
 }
 

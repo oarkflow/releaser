@@ -1,0 +1,24 @@
+# MyApp Configuration
+# This file configures both CLI and GUI components
+
+# Logging settings
+log:
+  level: info  # debug, info, warn, error
+  file: /var/log/myapp/myapp.log
+
+# Server settings (used by both CLI and GUI)
+server:
+  port: 8080
+  host: localhost
+
+# GUI settings
+gui:
+  theme: system  # system, light, dark
+  window:
+    width: 800
+    height: 600
+
+# CLI settings
+cli:
+  color: auto  # auto, always, never
+  output: text  # text, json, yaml

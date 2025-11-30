@@ -335,3 +335,247 @@ func (s *WindowsSigner) Sign(ctx context.Context, cert, password, timestampServe
 	log.Info("Executable signed successfully")
 	return nil
 }
+
+// CosignSigner provides cosign-based signing (including keyless with OIDC)
+type CosignSigner struct {
+	distDir string
+	tmplCtx *tmpl.Context
+}
+
+// NewCosignSigner creates a new cosign signer
+func NewCosignSigner(distDir string, tmplCtx *tmpl.Context) *CosignSigner {
+	return &CosignSigner{
+		distDir: distDir,
+		tmplCtx: tmplCtx,
+	}
+}
+
+// CosignConfig represents cosign signing configuration
+type CosignConfig struct {
+	// Keyless uses OIDC-based keyless signing (Sigstore)
+	Keyless bool
+	// KeyRef is the path to the private key (for key-based signing)
+	KeyRef string
+	// Certificate is the path to the certificate
+	Certificate string
+	// CertificateChain is the path to the certificate chain
+	CertificateChain string
+	// OIDC options for keyless signing
+	OIDCIssuer   string
+	OIDCClientID string
+	// Rekor URL for transparency log
+	RekorURL string
+	// FulcioURL for certificate authority
+	FulcioURL string
+	// Annotations to add to the signature
+	Annotations map[string]string
+	// RecursiveSign for signing all images in a multi-arch manifest
+	Recursive bool
+}
+
+// SignContainer signs a container image using cosign
+func (s *CosignSigner) SignContainer(ctx context.Context, cfg CosignConfig, imageRef string) error {
+	log.Info("Signing container image with cosign", "image", imageRef)
+
+	// Check if cosign is available
+	if _, err := exec.LookPath("cosign"); err != nil {
+		return fmt.Errorf("cosign not found in PATH: %w", err)
+	}
+
+	args := []string{"sign"}
+
+	if cfg.Keyless {
+		// Keyless signing using OIDC
+		args = append(args, "--yes") // Skip confirmation prompts
+		if cfg.OIDCIssuer != "" {
+			args = append(args, "--oidc-issuer", cfg.OIDCIssuer)
+		}
+		if cfg.OIDCClientID != "" {
+			args = append(args, "--oidc-client-id", cfg.OIDCClientID)
+		}
+		if cfg.FulcioURL != "" {
+			args = append(args, "--fulcio-url", cfg.FulcioURL)
+		}
+		if cfg.RekorURL != "" {
+			args = append(args, "--rekor-url", cfg.RekorURL)
+		}
+	} else if cfg.KeyRef != "" {
+		// Key-based signing
+		args = append(args, "--key", cfg.KeyRef)
+		if cfg.Certificate != "" {
+			args = append(args, "--certificate", cfg.Certificate)
+		}
+		if cfg.CertificateChain != "" {
+			args = append(args, "--certificate-chain", cfg.CertificateChain)
+		}
+	}
+
+	if cfg.Recursive {
+		args = append(args, "--recursive")
+	}
+
+	// Add annotations
+	for k, v := range cfg.Annotations {
+		args = append(args, "-a", fmt.Sprintf("%s=%s", k, v))
+	}
+
+	args = append(args, imageRef)
+
+	cmd := exec.CommandContext(ctx, "cosign", args...)
+	cmd.Env = os.Environ()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cosign sign failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	log.Info("Container image signed successfully", "image", imageRef)
+	return nil
+}
+
+// SignBlob signs a blob (file) using cosign
+func (s *CosignSigner) SignBlob(ctx context.Context, cfg CosignConfig, blobPath string) (string, error) {
+	log.Info("Signing blob with cosign", "path", blobPath)
+
+	// Check if cosign is available
+	if _, err := exec.LookPath("cosign"); err != nil {
+		return "", fmt.Errorf("cosign not found in PATH: %w", err)
+	}
+
+	sigPath := blobPath + ".sig"
+	certPath := blobPath + ".pem"
+
+	args := []string{"sign-blob"}
+
+	if cfg.Keyless {
+		args = append(args, "--yes")
+		args = append(args, "--output-signature", sigPath)
+		args = append(args, "--output-certificate", certPath)
+		if cfg.OIDCIssuer != "" {
+			args = append(args, "--oidc-issuer", cfg.OIDCIssuer)
+		}
+		if cfg.OIDCClientID != "" {
+			args = append(args, "--oidc-client-id", cfg.OIDCClientID)
+		}
+		if cfg.FulcioURL != "" {
+			args = append(args, "--fulcio-url", cfg.FulcioURL)
+		}
+		if cfg.RekorURL != "" {
+			args = append(args, "--rekor-url", cfg.RekorURL)
+		}
+	} else if cfg.KeyRef != "" {
+		args = append(args, "--key", cfg.KeyRef)
+		args = append(args, "--output-signature", sigPath)
+	}
+
+	args = append(args, blobPath)
+
+	cmd := exec.CommandContext(ctx, "cosign", args...)
+	cmd.Env = os.Environ()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("cosign sign-blob failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	log.Info("Blob signed successfully", "signature", sigPath)
+	return sigPath, nil
+}
+
+// VerifyContainer verifies a container image signature
+func (s *CosignSigner) VerifyContainer(ctx context.Context, cfg CosignConfig, imageRef string) error {
+	log.Info("Verifying container image with cosign", "image", imageRef)
+
+	args := []string{"verify"}
+
+	if cfg.Keyless {
+		// For keyless, we need to specify the expected issuer/subject
+		if cfg.OIDCIssuer != "" {
+			args = append(args, "--certificate-oidc-issuer", cfg.OIDCIssuer)
+		}
+	} else if cfg.KeyRef != "" {
+		args = append(args, "--key", cfg.KeyRef)
+	}
+
+	args = append(args, imageRef)
+
+	cmd := exec.CommandContext(ctx, "cosign", args...)
+	cmd.Env = os.Environ()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cosign verify failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	log.Info("Container image verified successfully", "image", imageRef)
+	return nil
+}
+
+// AttachSBOM attaches an SBOM to a container image
+func (s *CosignSigner) AttachSBOM(ctx context.Context, sbomPath, sbomType, imageRef string) error {
+	log.Info("Attaching SBOM to container image", "image", imageRef, "sbom", sbomPath)
+
+	args := []string{
+		"attach", "sbom",
+		"--sbom", sbomPath,
+		"--type", sbomType, // spdx, cyclonedx, etc.
+		imageRef,
+	}
+
+	cmd := exec.CommandContext(ctx, "cosign", args...)
+	cmd.Env = os.Environ()
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cosign attach sbom failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	log.Info("SBOM attached successfully", "image", imageRef)
+	return nil
+}
+
+// AttestContainer creates an in-toto attestation for a container image
+func (s *CosignSigner) AttestContainer(ctx context.Context, cfg CosignConfig, predicatePath, predicateType, imageRef string) error {
+	log.Info("Creating attestation for container image", "image", imageRef)
+
+	args := []string{
+		"attest",
+		"--predicate", predicatePath,
+		"--type", predicateType,
+	}
+
+	if cfg.Keyless {
+		args = append(args, "--yes")
+		if cfg.OIDCIssuer != "" {
+			args = append(args, "--oidc-issuer", cfg.OIDCIssuer)
+		}
+	} else if cfg.KeyRef != "" {
+		args = append(args, "--key", cfg.KeyRef)
+	}
+
+	args = append(args, imageRef)
+
+	cmd := exec.CommandContext(ctx, "cosign", args...)
+	cmd.Env = os.Environ()
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("cosign attest failed: %w\nstderr: %s", err, stderr.String())
+	}
+
+	log.Info("Attestation created successfully", "image", imageRef)
+	return nil
+}

@@ -91,6 +91,37 @@ nfpms:
       postinstall: scripts/postinstall.sh
       preremove: scripts/preremove.sh
 
+# macOS App Bundles
+app_bundles:
+  - id: macos-app
+    name: GoFiber API
+    identifier: com.example.gofiber-api
+    # icon: assets/icon.icns  # Uncomment if you have an icon
+
+# macOS DMG disk images
+dmgs:
+  - id: macos-dmg
+    name: GoFiber API
+    applications_symlink: true
+
+# macOS PKG installers
+pkgs:
+  - id: macos-pkg
+    name: GoFiber API
+    identifier: com.example.gofiber-api
+
+# Windows MSI installers
+msis:
+  - id: windows-msi
+    name: GoFiber API
+    manufacturer: Example Inc
+    upgrade_code: "12345678-1234-1234-1234-123456789012"
+
+# Windows NSIS installers
+nsis:
+  - id: windows-nsis
+    name: GoFiber API
+
 dockers:
   - id: api-docker
     ids:
@@ -138,17 +169,18 @@ sboms:
       - spdx-json
 
 signs:
-  - id: checksums
-    cmd: gpg
-    args:
-      - "--batch"
-      - "--local-user"
-      - "{{ .Env.GPG_FINGERPRINT }}"
-      - "--output"
-      - "${signature}"
-      - "--detach-sign"
-      - "${artifact}"
-    artifacts: checksum
+  # GPG signing - disable for testing without GPG key
+  # - id: checksums
+  #   cmd: gpg
+  #   args:
+  #     - "--batch"
+  #     - "--local-user"
+  #     - "{{ .Env.GPG_FINGERPRINT }}"
+  #     - "--output"
+  #     - "${signature}"
+  #     - "--detach-sign"
+  #     - "${artifact}"
+  #   artifacts: checksum
 
 changelog:
   sort: asc

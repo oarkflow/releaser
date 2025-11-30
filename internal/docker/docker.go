@@ -242,3 +242,194 @@ func (m *MultiBuilder) PushAll(ctx context.Context) error {
 	}
 	return nil
 }
+
+// DockerSigner signs Docker images using cosign or other tools
+type DockerSigner struct {
+	configs []config.DockerSign
+	tmplCtx *tmpl.Context
+	manager *artifact.Manager
+}
+
+// NewDockerSigner creates a new Docker signer
+func NewDockerSigner(configs []config.DockerSign, tmplCtx *tmpl.Context, manager *artifact.Manager) *DockerSigner {
+	return &DockerSigner{
+		configs: configs,
+		tmplCtx: tmplCtx,
+		manager: manager,
+	}
+}
+
+// SignAll signs all Docker images according to configuration
+func (s *DockerSigner) SignAll(ctx context.Context) error {
+	if len(s.configs) == 0 {
+		log.Debug("No Docker signing configurations")
+		return nil
+	}
+
+	log.Info("Signing Docker images")
+
+	for _, cfg := range s.configs {
+		if err := s.signWithConfig(ctx, cfg); err != nil {
+			return fmt.Errorf("docker signing failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// signWithConfig signs images with a specific configuration
+func (s *DockerSigner) signWithConfig(ctx context.Context, cfg config.DockerSign) error {
+	// Get images to sign
+	var images []string
+
+	if len(cfg.Images) > 0 {
+		// Use explicitly specified images
+		for _, img := range cfg.Images {
+			expanded, err := s.tmplCtx.Apply(img)
+			if err != nil {
+				return fmt.Errorf("failed to expand image template: %w", err)
+			}
+			images = append(images, expanded)
+		}
+	} else {
+		// Get Docker images from artifacts
+		dockerImages := s.manager.Filter(func(a artifact.Artifact) bool {
+			return a.Type == artifact.TypeDockerImage
+		})
+		for _, img := range dockerImages {
+			if imgName, ok := img.Extra["image"].(string); ok {
+				images = append(images, imgName)
+			}
+		}
+	}
+
+	if len(images) == 0 {
+		log.Debug("No Docker images to sign")
+		return nil
+	}
+
+	// Use cosign if configured
+	if cfg.Cosign != nil {
+		return s.signWithCosign(ctx, cfg, images)
+	}
+
+	// Use custom command if specified
+	if cfg.Cmd != "" {
+		return s.signWithCustomCmd(ctx, cfg, images)
+	}
+
+	// Default to cosign keyless if no configuration specified
+	return s.signWithCosign(ctx, cfg, images)
+}
+
+// signWithCosign signs images using cosign
+func (s *DockerSigner) signWithCosign(ctx context.Context, cfg config.DockerSign, images []string) error {
+	// Check if cosign is available
+	if _, err := exec.LookPath("cosign"); err != nil {
+		log.Warn("Skipping Docker signing: cosign not found in PATH")
+		return nil
+	}
+
+	for _, image := range images {
+		log.Info("Signing Docker image with cosign", "image", image)
+
+		args := []string{"sign"}
+
+		if cfg.Cosign != nil {
+			if cfg.Cosign.Keyless {
+				// Keyless signing using OIDC/Sigstore
+				args = append(args, "--yes")
+				if cfg.Cosign.OIDCIssuer != "" {
+					args = append(args, "--oidc-issuer", cfg.Cosign.OIDCIssuer)
+				}
+				if cfg.Cosign.OIDCClientID != "" {
+					args = append(args, "--oidc-client-id", cfg.Cosign.OIDCClientID)
+				}
+				if cfg.Cosign.FulcioURL != "" {
+					args = append(args, "--fulcio-url", cfg.Cosign.FulcioURL)
+				}
+				if cfg.Cosign.RekorURL != "" {
+					args = append(args, "--rekor-url", cfg.Cosign.RekorURL)
+				}
+			} else if cfg.Cosign.KeyRef != "" {
+				// Key-based signing
+				args = append(args, "--key", cfg.Cosign.KeyRef)
+				if cfg.Cosign.Certificate != "" {
+					args = append(args, "--certificate", cfg.Cosign.Certificate)
+				}
+				if cfg.Cosign.CertificateChain != "" {
+					args = append(args, "--certificate-chain", cfg.Cosign.CertificateChain)
+				}
+			}
+
+			if cfg.Cosign.Recursive {
+				args = append(args, "--recursive")
+			}
+
+			// Add annotations
+			for k, v := range cfg.Cosign.Annotations {
+				args = append(args, "-a", fmt.Sprintf("%s=%s", k, v))
+			}
+		} else {
+			// Default to keyless signing
+			args = append(args, "--yes")
+		}
+
+		args = append(args, image)
+
+		// Prepare environment
+		env := os.Environ()
+		for _, e := range cfg.Env {
+			expanded, _ := s.tmplCtx.Apply(e)
+			env = append(env, expanded)
+		}
+
+		cmd := exec.CommandContext(ctx, "cosign", args...)
+		cmd.Env = env
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("cosign sign failed for %s: %w", image, err)
+		}
+
+		log.Info("Docker image signed successfully", "image", image)
+	}
+
+	return nil
+}
+
+// signWithCustomCmd signs images using a custom command
+func (s *DockerSigner) signWithCustomCmd(ctx context.Context, cfg config.DockerSign, images []string) error {
+	for _, image := range images {
+		log.Info("Signing Docker image", "image", image, "cmd", cfg.Cmd)
+
+		// Expand arguments
+		args := make([]string, len(cfg.Args))
+		for i, arg := range cfg.Args {
+			expanded := strings.ReplaceAll(arg, "${image}", image)
+			expanded, _ = s.tmplCtx.Apply(expanded)
+			args[i] = expanded
+		}
+
+		// Prepare environment
+		env := os.Environ()
+		for _, e := range cfg.Env {
+			expanded, _ := s.tmplCtx.Apply(e)
+			env = append(env, expanded)
+		}
+
+		cmd := exec.CommandContext(ctx, cfg.Cmd, args...)
+		cmd.Env = env
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("docker signing command failed for %s: %w", image, err)
+		}
+
+		log.Info("Docker image signed successfully", "image", image)
+	}
+
+	return nil
+}

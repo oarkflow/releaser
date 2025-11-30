@@ -84,6 +84,9 @@ type Config struct {
 	// macOS DMGs configuration
 	DMGs []DMG `yaml:"dmgs,omitempty"`
 
+	// macOS PKGs configuration
+	PKGs []PKG `yaml:"pkgs,omitempty"`
+
 	// Windows MSI installers configuration
 	MSIs []MSI `yaml:"msis,omitempty"`
 
@@ -282,6 +285,9 @@ type Build struct {
 	// Builder to use (go, rust, node, python, prebuilt)
 	Builder string `yaml:"builder,omitempty"`
 
+	// Type of application: "cli" (default), "gui", "service", "library"
+	Type string `yaml:"type,omitempty"`
+
 	// Dir is the working directory
 	Dir string `yaml:"dir,omitempty"`
 
@@ -351,6 +357,12 @@ type Build struct {
 	// GoBinary to use
 	GoBinary string `yaml:"gobinary,omitempty"`
 
+	// CGO configuration
+	Cgo CgoConfig `yaml:"cgo,omitempty"`
+
+	// GUI application metadata
+	GUI *GUIConfig `yaml:"gui,omitempty"`
+
 	// Command to run (for custom builders)
 	Command string `yaml:"command,omitempty"`
 
@@ -359,6 +371,42 @@ type Build struct {
 
 	// Overrides for specific targets
 	Overrides []BuildOverride `yaml:"overrides,omitempty"`
+}
+
+// CgoConfig represents CGO cross-compilation configuration
+type CgoConfig struct {
+	// Enabled enables CGO (default: false)
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// CC is the C compiler (auto-detected if empty)
+	CC string `yaml:"cc,omitempty"`
+
+	// CXX is the C++ compiler (auto-detected if empty)
+	CXX string `yaml:"cxx,omitempty"`
+
+	// CFlags for C compiler
+	CFlags []string `yaml:"cflags,omitempty"`
+
+	// CXXFlags for C++ compiler
+	CXXFlags []string `yaml:"cxxflags,omitempty"`
+
+	// LDFlags for linker
+	LDFlags []string `yaml:"ldflags,omitempty"`
+
+	// PKGConfig packages to include
+	PKGConfig []string `yaml:"pkg_config,omitempty"`
+
+	// CrossCompilers maps target to C/C++ compilers
+	// e.g., "linux_amd64": {"cc": "x86_64-linux-gnu-gcc", "cxx": "x86_64-linux-gnu-g++"}
+	CrossCompilers map[string]CrossCompiler `yaml:"cross_compilers,omitempty"`
+}
+
+// CrossCompiler represents a cross-compiler configuration
+type CrossCompiler struct {
+	CC      string   `yaml:"cc,omitempty"`
+	CXX     string   `yaml:"cxx,omitempty"`
+	CFlags  []string `yaml:"cflags,omitempty"`
+	LDFlags []string `yaml:"ldflags,omitempty"`
 }
 
 // BuildIgnore represents an ignore rule for builds
@@ -373,6 +421,95 @@ type BuildIgnore struct {
 type BuildHooks struct {
 	Pre  string `yaml:"pre,omitempty"`
 	Post string `yaml:"post,omitempty"`
+}
+
+// GUIConfig represents GUI application configuration
+type GUIConfig struct {
+	// Name is the display name of the application
+	Name string `yaml:"name,omitempty"`
+
+	// Icon is the path to the application icon
+	Icon string `yaml:"icon,omitempty"`
+
+	// Categories for desktop entry (Linux .desktop file)
+	Categories []string `yaml:"categories,omitempty"`
+
+	// Keywords for desktop entry
+	Keywords []string `yaml:"keywords,omitempty"`
+
+	// Comment/description for desktop entry
+	Comment string `yaml:"comment,omitempty"`
+
+	// GenericName for desktop entry
+	GenericName string `yaml:"generic_name,omitempty"`
+
+	// StartupNotify enables startup notification
+	StartupNotify bool `yaml:"startup_notify,omitempty"`
+
+	// Terminal runs in terminal (should be false for GUI apps)
+	Terminal bool `yaml:"terminal,omitempty"`
+
+	// MimeTypes the application can open
+	MimeTypes []string `yaml:"mime_types,omitempty"`
+
+	// Actions for desktop entry
+	Actions []GUIAction `yaml:"actions,omitempty"`
+
+	// MacOS specific configuration
+	MacOS *GUIMacOS `yaml:"macos,omitempty"`
+
+	// Windows specific configuration
+	Windows *GUIWindows `yaml:"windows,omitempty"`
+}
+
+// GUIAction represents a desktop action
+type GUIAction struct {
+	Name string `yaml:"name"`
+	Exec string `yaml:"exec,omitempty"`
+	Icon string `yaml:"icon,omitempty"`
+}
+
+// GUIMacOS represents macOS-specific GUI configuration
+type GUIMacOS struct {
+	// BundleID is the macOS bundle identifier
+	BundleID string `yaml:"bundle_id,omitempty"`
+
+	// MinimumSystemVersion for macOS
+	MinimumSystemVersion string `yaml:"minimum_system_version,omitempty"`
+
+	// Entitlements file path
+	Entitlements string `yaml:"entitlements,omitempty"`
+
+	// InfoPlist additional keys
+	InfoPlist map[string]interface{} `yaml:"info_plist,omitempty"`
+
+	// HighResolutionCapable enables retina support
+	HighResolutionCapable bool `yaml:"high_resolution_capable,omitempty"`
+}
+
+// GUIWindows represents Windows-specific GUI configuration
+type GUIWindows struct {
+	// Icon is the path to the Windows icon (.ico)
+	Icon string `yaml:"icon,omitempty"`
+
+	// Manifest is the path to the Windows manifest file
+	Manifest string `yaml:"manifest,omitempty"`
+
+	// StartMenuFolder for the application
+	StartMenuFolder string `yaml:"start_menu_folder,omitempty"`
+
+	// DesktopShortcut creates a desktop shortcut
+	DesktopShortcut bool `yaml:"desktop_shortcut,omitempty"`
+
+	// FileAssociations for the application
+	FileAssociations []WindowsFileAssoc `yaml:"file_associations,omitempty"`
+}
+
+// WindowsFileAssoc represents a Windows file association
+type WindowsFileAssoc struct {
+	Extension   string `yaml:"extension"`
+	Description string `yaml:"description,omitempty"`
+	Icon        string `yaml:"icon,omitempty"`
 }
 
 // BuildOverride for target-specific overrides

@@ -19,8 +19,10 @@ import (
 	"github.com/oarkflow/releaser/internal/archive"
 	"github.com/oarkflow/releaser/internal/artifact"
 	"github.com/oarkflow/releaser/internal/builder"
+	"github.com/oarkflow/releaser/internal/cache"
 	"github.com/oarkflow/releaser/internal/checksum"
 	"github.com/oarkflow/releaser/internal/config"
+	"github.com/oarkflow/releaser/internal/deps"
 	"github.com/oarkflow/releaser/internal/docker"
 	"github.com/oarkflow/releaser/internal/git"
 	"github.com/oarkflow/releaser/internal/nfpm"
@@ -41,6 +43,7 @@ type ReleaseOptions struct {
 	SkipSign     bool
 	SkipDocker   bool
 	SkipAnnounce bool
+	SkipCache    bool
 	Clean        bool
 	Parallelism  int
 	Timeout      string
@@ -53,6 +56,7 @@ type Pipeline struct {
 	artifacts   *artifact.Manager
 	gitInfo     *git.Info
 	templateCtx *tmpl.Context
+	buildCache  *cache.BuildCache
 	distDir     string
 	startTime   time.Time
 	mu          sync.Mutex
@@ -94,12 +98,23 @@ func New(ctx context.Context, opts ReleaseOptions) (*Pipeline, error) {
 		distDir = filepath.Join(cwd, distDir)
 	}
 
+	// Initialize build cache if not skipped
+	var buildCache *cache.BuildCache
+	if !opts.SkipCache {
+		cacheOpts := cache.DefaultOptions()
+		buildCache, _ = cache.NewBuildCache(cacheOpts)
+		if buildCache != nil {
+			log.Debug("Build cache initialized", "dir", cacheOpts.Dir)
+		}
+	}
+
 	return &Pipeline{
 		config:      cfg,
 		options:     opts,
 		artifacts:   artifacts,
 		gitInfo:     gitInfo,
 		templateCtx: templateCtx,
+		buildCache:  buildCache,
 		distDir:     distDir,
 		startTime:   time.Now(),
 	}, nil
@@ -216,6 +231,11 @@ func (p *Pipeline) Build(ctx context.Context) error {
 	if len(p.config.Builds) == 0 {
 		log.Warn("No builds configured")
 		return nil
+	}
+
+	// Check and install required dependencies
+	if err := p.ensureBuildDependencies(); err != nil {
+		return fmt.Errorf("dependency check failed: %w", err)
 	}
 
 	// Filter targets if single-target mode
@@ -525,6 +545,40 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 
 	outputPath := filepath.Join(outputDir, binary)
 
+	// Check build cache
+	cacheKey := ""
+	if p.buildCache != nil && !p.options.SkipCache {
+		// Generate cache key from build config, target, and source hash
+		sourcePatterns := []string{"*.go", "go.mod", "go.sum"}
+		if build.Builder == "rust" {
+			sourcePatterns = []string{"*.rs", "Cargo.toml", "Cargo.lock"}
+		}
+		cacheKey = p.buildCache.BuildKey(target.OS, target.Arch, binary, sourcePatterns)
+
+		// Check if we have a cached binary
+		if cachedPath, found := p.buildCache.GetBinary(cacheKey); found {
+			log.Info("Using cached binary", "target", target.String())
+			if err := copyFile(cachedPath, outputPath); err == nil {
+				// Register artifact
+				p.mu.Lock()
+				p.artifacts.Add(artifact.Artifact{
+					Name:    binary,
+					Path:    outputPath,
+					Type:    artifact.TypeBinary,
+					Goos:    target.OS,
+					Goarch:  target.Arch,
+					Goarm:   target.Arm,
+					BuildID: build.ID,
+					Extra: map[string]interface{}{
+						"cached": true,
+					},
+				})
+				p.mu.Unlock()
+				return nil
+			}
+		}
+	}
+
 	// Build based on builder type
 	switch build.Builder {
 	case "", "go":
@@ -541,6 +595,13 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 		}
 	default:
 		return fmt.Errorf("unknown builder: %s", build.Builder)
+	}
+
+	// Cache the built binary
+	if p.buildCache != nil && cacheKey != "" && !p.options.SkipCache {
+		if err := p.buildCache.PutBinary(cacheKey, outputPath, target.OS, target.Arch); err != nil {
+			log.Debug("Failed to cache binary", "error", err)
+		}
 	}
 
 	// Register artifact
@@ -658,14 +719,21 @@ func (p *Pipeline) packages(ctx context.Context) error {
 		return nil
 	}
 
-	// Create nfpm packager
-	packager := nfpm.NewMultiPackager(p.config.NFPMs, p.templateCtx, p.artifacts, p.distDir)
+	// Create nfpm packager with full config for GUI app support
+	packager := nfpm.NewMultiPackagerWithConfig(p.config.NFPMs, p.config, p.templateCtx, p.artifacts, p.distDir)
 	return packager.BuildAll(ctx)
 }
 
 // platformPackages creates platform-specific packages (macOS App Bundle/DMG, Windows MSI/NSIS)
 func (p *Pipeline) platformPackages(ctx context.Context) error {
 	log.Info("Creating platform-specific packages")
+
+	// Build macOS Universal Binaries first (before App Bundles)
+	if len(p.config.UniversalBinaries) > 0 {
+		if err := packaging.BuildAllUniversalBinaries(ctx, p.config.UniversalBinaries, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build Universal Binaries: %w", err)
+		}
+	}
 
 	// Build macOS App Bundles
 	if len(p.config.AppBundles) > 0 {
@@ -681,6 +749,13 @@ func (p *Pipeline) platformPackages(ctx context.Context) error {
 		}
 	}
 
+	// Build macOS PKG installers
+	if len(p.config.PKGs) > 0 {
+		if err := packaging.BuildAllPKGs(ctx, p.config.PKGs, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build PKGs: %w", err)
+		}
+	}
+
 	// Build Windows MSI installers
 	if len(p.config.MSIs) > 0 {
 		if err := packaging.BuildAllMSIs(ctx, p.config.MSIs, p.templateCtx, p.artifacts, p.distDir); err != nil {
@@ -692,6 +767,27 @@ func (p *Pipeline) platformPackages(ctx context.Context) error {
 	if len(p.config.NSISs) > 0 {
 		if err := packaging.BuildAllNSIS(ctx, p.config.NSISs, p.templateCtx, p.artifacts, p.distDir); err != nil {
 			return fmt.Errorf("failed to build NSIS installers: %w", err)
+		}
+	}
+
+	// Build Linux Flatpak packages
+	if len(p.config.Flatpaks) > 0 {
+		if err := packaging.BuildAllFlatpaks(ctx, p.config, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build Flatpaks: %w", err)
+		}
+	}
+
+	// Build Linux AppImage packages
+	if len(p.config.AppImages) > 0 {
+		if err := packaging.BuildAllAppImages(ctx, p.config, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build AppImages: %w", err)
+		}
+	}
+
+	// Build Linux Snap packages
+	if len(p.config.Snapcrafts) > 0 {
+		if err := packaging.BuildAllSnaps(ctx, p.config, p.templateCtx, p.artifacts, p.distDir); err != nil {
+			return fmt.Errorf("failed to build Snaps: %w", err)
 		}
 	}
 
@@ -782,7 +878,19 @@ func (p *Pipeline) publishDocker(ctx context.Context) error {
 	}
 
 	dockerBuilder := docker.NewMultiBuilder(p.config.Dockers, p.templateCtx, p.artifacts, p.distDir)
-	return dockerBuilder.PushAll(ctx)
+	if err := dockerBuilder.PushAll(ctx); err != nil {
+		return err
+	}
+
+	// Sign Docker images if configured
+	if len(p.config.DockerSigns) > 0 {
+		signer := docker.NewDockerSigner(p.config.DockerSigns, p.templateCtx, p.artifacts)
+		if err := signer.SignAll(ctx); err != nil {
+			return fmt.Errorf("docker signing failed: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // publishPackages publishes to package managers
@@ -962,5 +1070,113 @@ func (p *Pipeline) loadState() error {
 	}
 
 	log.Info("Pipeline state loaded", "artifacts", len(state.Artifacts), "timestamp", state.Timestamp)
+	return nil
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0755)
+}
+
+// ensureBuildDependencies checks and installs required build tools
+func (p *Pipeline) ensureBuildDependencies() error {
+	log.Info("Checking build dependencies")
+
+	// Collect all targets that need cross-compilation
+	var crossTargets []string
+	needsCGO := false
+	needsPackaging := len(p.config.NFPMs) > 0
+	needsDocker := len(p.config.Dockers) > 0 && !p.options.SkipDocker
+	needsSigning := !p.options.SkipSign && len(p.config.Signs) > 0
+	needsSBOM := len(p.config.SBOMs) > 0
+
+	for _, build := range p.config.Builds {
+		if build.Skip {
+			continue
+		}
+
+		// Check if this build requires CGO
+		if build.Cgo.Enabled {
+			needsCGO = true
+
+			// Collect targets for CGO cross-compilation
+			for _, goos := range build.Goos {
+				for _, goarch := range build.Goarch {
+					target := goos + "_" + goarch
+					crossTargets = append(crossTargets, target)
+				}
+			}
+		}
+	}
+
+	// Ensure Fyne GUI dependencies if needed
+	for _, build := range p.config.Builds {
+		if build.Type == "gui" && build.Cgo.Enabled {
+			if err := deps.DetectAndInstallForFyne(); err != nil {
+				log.Warn("Could not install Fyne dependencies", "error", err)
+			}
+			break
+		}
+	}
+
+	// Ensure cross-compilers for CGO builds
+	if needsCGO && len(crossTargets) > 0 {
+		if err := deps.EnsureCrossCompilers(crossTargets); err != nil {
+			log.Warn("Could not install all cross-compilers", "error", err)
+		}
+	}
+
+	// Ensure packaging tools
+	if needsPackaging {
+		if err := deps.CheckAndInstall("nfpm"); err != nil {
+			return fmt.Errorf("nfpm required for packaging: %w", err)
+		}
+	}
+
+	// Ensure Docker
+	if needsDocker {
+		if err := deps.CheckAndInstall("docker"); err != nil {
+			log.Warn("Docker not available, skipping docker builds", "error", err)
+		}
+	}
+
+	// Ensure signing tools
+	if needsSigning {
+		// Check which signing method is configured
+		for _, signCfg := range p.config.Signs {
+			if signCfg.Cmd == "cosign" {
+				if err := deps.CheckAndInstall("cosign"); err != nil {
+					log.Warn("Cosign not available", "error", err)
+				}
+			} else if signCfg.Cmd == "gpg" || signCfg.Cmd == "" {
+				if err := deps.CheckAndInstall("gpg"); err != nil {
+					log.Warn("GPG not available", "error", err)
+				}
+			}
+		}
+	}
+
+	// Ensure SBOM tools
+	if needsSBOM {
+		if err := deps.CheckAndInstall("syft"); err != nil {
+			log.Warn("Syft not available, SBOM generation may be skipped", "error", err)
+		}
+	}
+
+	// Check for UPX if compression is enabled in upx config
+	if len(p.config.UPXs) > 0 {
+		if err := deps.CheckAndInstall("upx"); err != nil {
+			log.Warn("UPX not available, binary compression disabled", "error", err)
+		}
+	}
+
+	log.Info("Dependency check completed")
 	return nil
 }
