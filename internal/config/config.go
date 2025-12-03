@@ -48,6 +48,9 @@ type Config struct {
 	// Git configuration
 	Git GitConfig `yaml:"git,omitempty"`
 
+	// Versioning configuration
+	Versioning VersioningConfig `yaml:"versioning,omitempty"`
+
 	// Builds configuration
 	Builds []Build `yaml:"builds,omitempty"`
 
@@ -277,6 +280,15 @@ type GitConfig struct {
 	IgnoreTags []string `yaml:"ignore_tags,omitempty"`
 }
 
+// VersioningConfig allows customizing rendered version strings
+type VersioningConfig struct {
+	// Template overrides the default version string (applied after snapshot/nightly logic)
+	Template string `yaml:"template,omitempty"`
+
+	// RawTemplate overrides RawVersion (defaults to the same as Template when empty)
+	RawTemplate string `yaml:"raw_template,omitempty"`
+}
+
 // Build represents a build configuration
 type Build struct {
 	// ID of the build
@@ -360,6 +372,9 @@ type Build struct {
 	// CGO configuration
 	Cgo CgoConfig `yaml:"cgo,omitempty"`
 
+	// Obfuscation configuration for Go builds
+	Obfuscation GoObfuscationConfig `yaml:"obfuscation,omitempty"`
+
 	// GUI application metadata
 	GUI *GUIConfig `yaml:"gui,omitempty"`
 
@@ -399,6 +414,27 @@ type CgoConfig struct {
 	// CrossCompilers maps target to C/C++ compilers
 	// e.g., "linux_amd64": {"cc": "x86_64-linux-gnu-gcc", "cxx": "x86_64-linux-gnu-g++"}
 	CrossCompilers map[string]CrossCompiler `yaml:"cross_compilers,omitempty"`
+}
+
+// GoObfuscationConfig represents Go binary obfuscation settings
+type GoObfuscationConfig struct {
+	// Enabled toggles obfuscation
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Tool is the obfuscation binary to invoke (default: garble)
+	Tool string `yaml:"tool,omitempty"`
+
+	// Flags passed directly to the obfuscation tool before the subcommand
+	Flags []string `yaml:"flags,omitempty"`
+
+	// Env appends environment variables when running the obfuscation tool
+	Env []string `yaml:"env,omitempty"`
+
+	// Subcommand inserted between tool flags and go command (default: build)
+	Subcommand string `yaml:"subcommand,omitempty"`
+
+	// SkipSubcommand omits adding a subcommand when true
+	SkipSubcommand bool `yaml:"skip_subcommand,omitempty"`
 }
 
 // CrossCompiler represents a cross-compiler configuration

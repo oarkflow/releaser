@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/oarkflow/releaser/internal/artifact"
+	"github.com/oarkflow/releaser/internal/assets"
 	"github.com/oarkflow/releaser/internal/config"
 	"github.com/oarkflow/releaser/internal/tmpl"
 )
@@ -58,11 +59,11 @@ func (b *AppBundleBuilder) Build(ctx context.Context) error {
 
 // createAppBundle creates a single App Bundle.
 func (b *AppBundleBuilder) createAppBundle(ctx context.Context, binary artifact.Artifact) error {
-	appName := b.config.Name
-	if appName == "" {
-		appName = b.tmplCtx.Get("ProjectName")
+	displayName := b.config.Name
+	if displayName == "" {
+		displayName = b.tmplCtx.Get("ProjectName")
 	}
-	appName += ".app"
+	appName := displayName + ".app"
 
 	bundleID := b.config.Identifier
 	if bundleID == "" {
@@ -98,14 +99,21 @@ func (b *AppBundleBuilder) createAppBundle(ctx context.Context, binary artifact.
 
 	// Create Info.plist
 	plistPath := filepath.Join(contentsPath, "Info.plist")
-	if err := b.createInfoPlist(plistPath, execName, bundleID, appName, version); err != nil {
+	if err := b.createInfoPlist(plistPath, execName, bundleID, displayName, version); err != nil {
 		return fmt.Errorf("failed to create Info.plist: %w", err)
 	}
 
-	// Copy icon if provided
-	if b.config.Icon != "" {
-		iconPath := filepath.Join(resourcesPath, "icon.icns")
-		if err := copyFile(b.config.Icon, iconPath); err != nil {
+	iconPath := b.config.Icon
+	if iconPath == "" {
+		if iconSet, err := assets.EnsureAppIcon(displayName, b.distDir); err == nil {
+			iconPath = iconSet.ICNS
+		} else {
+			log.Warn("Failed to generate default macOS icon", "error", err)
+		}
+	}
+	if iconPath != "" {
+		dest := filepath.Join(resourcesPath, "icon.icns")
+		if err := copyFile(iconPath, dest); err != nil {
 			log.Warn("Failed to copy icon", "error", err)
 		}
 	}

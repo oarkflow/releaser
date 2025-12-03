@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/oarkflow/releaser/internal/artifact"
+	"github.com/oarkflow/releaser/internal/assets"
 	"github.com/oarkflow/releaser/internal/config"
 	"github.com/oarkflow/releaser/internal/tmpl"
 )
@@ -237,10 +238,7 @@ depends:
 		}
 
 		if isGUI {
-			iconPath := ""
-			if guiConfig != nil && guiConfig.Icon != "" {
-				iconPath = guiConfig.Icon
-			}
+			iconPath := resolveGUIIconPath(guiConfig, p.distDir, appID)
 
 			desktopFile := filepath.Join(p.distDir, appID+".desktop")
 			if err := p.generateDesktopFile(desktopFile, binary, guiConfig, bindir); err != nil {
@@ -345,9 +343,6 @@ depends:
 			if build.ID == binary.BuildID && build.Type == "gui" {
 				isGUI = true
 				guiConfig = build.GUI
-				if guiConfig != nil && guiConfig.Icon != "" {
-					iconPath = guiConfig.Icon
-				}
 				break
 			}
 		}
@@ -355,6 +350,7 @@ depends:
 
 	// Generate desktop file for GUI apps
 	if isGUI {
+		iconPath = resolveGUIIconPath(guiConfig, p.distDir, appID)
 		desktopFile = filepath.Join(p.distDir, appID+".desktop")
 		if err := p.generateDesktopFile(desktopFile, binary, guiConfig, bindir); err != nil {
 			log.Warn("Failed to generate desktop file", "error", err)
@@ -469,6 +465,25 @@ Name={{ .Name }}
 	defer f.Close()
 
 	return tmpl.Execute(f, data)
+}
+
+// resolveGUIIconPath returns a usable icon path, generating one that reflects
+// the application name when the build configuration omits a specific file.
+func resolveGUIIconPath(guiConfig *config.GUIConfig, distDir, fallbackName string) string {
+	if guiConfig != nil {
+		if guiConfig.Icon != "" {
+			return guiConfig.Icon
+		}
+		if fallbackName == "" && guiConfig.Name != "" {
+			fallbackName = guiConfig.Name
+		}
+	}
+	icons, err := assets.EnsureAppIcon(fallbackName, distDir)
+	if err != nil {
+		log.Debug("Falling back without icon", "error", err)
+		return ""
+	}
+	return icons.PNG
 }
 
 // runNfpm runs nfpm to create a package.

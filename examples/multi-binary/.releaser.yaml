@@ -5,6 +5,9 @@ version: 2
 
 project_name: myapp
 
+versioning:
+  template: '{{ if .IsSnapshot }}{{ .OriginalVersion }}{{ else }}{{ .Version }}{{ end }}'
+
 defaults:
   homepage: https://github.com/example/myapp
   description: A multi-binary application with CLI and GUI components
@@ -18,9 +21,19 @@ env:
 builds:
   # CLI binary - installed to /usr/bin, available in PATH
   - id: cli
-    main: ./cmd/cli
+    main: ./cmd
     binary: myapp
     type: cli  # CLI type installs to system PATH
+    obfuscation:
+      enabled: true
+      tool: garble
+      flags:
+        - -literals
+        - -tiny
+        - -debug=false
+        - -seed=random
+      env:
+        - GARBLE_SEED=random
     goos:
       - linux
       - darwin
@@ -48,7 +61,7 @@ builds:
   # - Linux ARM64: Requires cross-compiled X11/GL dev headers
   # For full cross-platform GUI builds, use fyne-cross or build on each platform.
   - id: gui
-    main: ./cmd/gui
+    main: ./gui/cmd
     binary: myapp-gui
     type: gui  # GUI type creates desktop entries and app bundles
     goos:

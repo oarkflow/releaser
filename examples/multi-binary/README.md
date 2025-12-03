@@ -24,12 +24,12 @@ This example demonstrates how to build and package a project with multiple binar
 
 ```bash
 # Run the CLI
-go run ./cmd/cli
-go run ./cmd/cli hello John
-go run ./cmd/cli --interactive
+go run ./cmd
+go run ./cmd hello John
+go run ./cmd --interactive
 
 # Run the GUI
-go run ./cmd/gui
+go run ./gui/cmd
 ```
 
 ## Project Structure
@@ -39,9 +39,9 @@ multi-binary/
 ├── .releaser.yaml          # Releaser configuration
 ├── go.mod
 ├── cmd/
-│   ├── cli/
-│   │   └── main.go        # CLI Hello World application
-│   └── gui/
+│   └── main.go            # CLI Hello World application
+├── gui/
+│   └── cmd/
 │       └── main.go        # GUI Hello World application (Fyne)
 ├── icons/                  # Application icons
 │   ├── myapp.png          # Linux icon
@@ -107,6 +107,8 @@ releaser release
 
 ## Configuration
 
+### Desktop integration
+
 The `gui` section in the build config controls desktop integration:
 
 ```yaml
@@ -125,3 +127,40 @@ builds:
         start_menu_folder: "MyApp"
         desktop_shortcut: true
 ```
+
+### Secure Go builds
+
+Go builds can enable obfuscation/garbling directly from `.releaser.yaml` without custom scripts:
+
+```yaml
+builds:
+  - id: cli
+    main: ./cmd
+    obfuscation:
+      enabled: true
+      tool: garble
+      flags:
+        - -literals
+        - -tiny
+        - -debug=false
+        - -seed=random
+      env:
+        - GARBLE_SEED=random
+```
+
+Releaser will invoke `garble build` with the configured flags and reuse the same Go arguments it would normally pass to `go build`, matching the behavior of `secure-build.sh`.
+
+### Version naming templates
+
+You can tweak how `{{ .Version }}` renders everywhere (artifact names, package metadata, etc.) via `versioning.template`. The example strips the automatic `-SNAPSHOT` suffix so snapshot builds reuse the underlying git describe string:
+
+```yaml
+versioning:
+  template: '{{ if .IsSnapshot }}{{ .OriginalVersion }}{{ else }}{{ .Version }}{{ end }}'
+```
+
+Templating has access to the entire context (`OriginalVersion`, `IsSnapshot`, `Branch`, etc.) so you can inject custom suffixes/prefixes or date stamps without editing every archive name by hand.
+
+### Default icons
+
+If you omit `gui.icon`, Releaser now ships a built-in placeholder icon (PNG/ICO/ICNS). During packaging it writes the default assets under `.releaser-icons/` inside the dist directory and wires them into NFPM/AppImage/macOS bundles automatically, so GUI builds no longer need to keep `icons/` in the repository unless you want branded artwork.

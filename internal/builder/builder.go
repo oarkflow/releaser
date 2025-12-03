@@ -128,6 +128,17 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 		env = append(env, expanded)
 	}
 
+	// Add obfuscation-specific environment
+	if build.Obfuscation.Enabled {
+		for _, e := range build.Obfuscation.Env {
+			expanded, err := tmplCtx.Apply(e)
+			if err != nil {
+				return fmt.Errorf("failed to expand obfuscation env %s: %w", e, err)
+			}
+			env = append(env, expanded)
+		}
+	}
+
 	// Prepare ldflags
 	var ldflags []string
 	for _, ldflag := range build.Ldflags {
@@ -234,9 +245,40 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 		}
 	}
 
+	cmdName := goBinary
+	cmdArgs := args
+
+	if build.Obfuscation.Enabled {
+		cmdName = build.Obfuscation.Tool
+		if cmdName == "" {
+			cmdName = "garble"
+		}
+
+		var toolFlags []string
+		for _, flag := range build.Obfuscation.Flags {
+			expanded, err := tmplCtx.Apply(flag)
+			if err != nil {
+				return fmt.Errorf("failed to expand obfuscation flag %s: %w", flag, err)
+			}
+			if strings.TrimSpace(expanded) != "" {
+				toolFlags = append(toolFlags, expanded)
+			}
+		}
+
+		cmdArgs = append([]string{}, toolFlags...)
+		if !build.Obfuscation.SkipSubcommand {
+			subcommand := build.Obfuscation.Subcommand
+			if subcommand == "" {
+				subcommand = "build"
+			}
+			cmdArgs = append(cmdArgs, subcommand)
+		}
+		cmdArgs = append(cmdArgs, args...)
+	}
+
 	// Run build
-	log.Debug("Running go build", "args", args)
-	cmd := exec.CommandContext(ctx, goBinary, args...)
+	log.Debug("Running Go compiler", "cmd", cmdName, "args", cmdArgs)
+	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
 	cmd.Dir = dir
 	cmd.Env = env
 

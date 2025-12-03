@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -21,6 +22,7 @@ type Cache struct {
 	dir      string
 	metadata map[string]*CacheEntry
 	metaFile string
+	mu       sync.RWMutex
 }
 
 // CacheEntry represents a cached build entry
@@ -81,11 +83,17 @@ func (c *Cache) loadMetadata() {
 	if err != nil {
 		return
 	}
-	json.Unmarshal(data, &c.metadata)
+	meta := make(map[string]*CacheEntry)
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return
+	}
+	c.mu.Lock()
+	c.metadata = meta
+	c.mu.Unlock()
 }
 
 // saveMetadata saves cache metadata to disk
-func (c *Cache) saveMetadata() error {
+func (c *Cache) saveMetadataLocked() error {
 	data, err := json.MarshalIndent(c.metadata, "", "  ")
 	if err != nil {
 		return err
@@ -176,7 +184,9 @@ func (c *Cache) Get(key string) (*CacheEntry, bool) {
 		return nil, false
 	}
 
+	c.mu.RLock()
 	entry, ok := c.metadata[key]
+	c.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
@@ -189,8 +199,13 @@ func (c *Cache) Get(key string) (*CacheEntry, bool) {
 
 	// Check file exists
 	if _, err := os.Stat(entry.Path); os.IsNotExist(err) {
+		c.mu.Lock()
 		delete(c.metadata, key)
-		c.saveMetadata()
+		err := c.saveMetadataLocked()
+		c.mu.Unlock()
+		if err != nil {
+			log.Warn("failed to save cache metadata", "error", err)
+		}
 		return nil, false
 	}
 
@@ -227,8 +242,13 @@ func (c *Cache) Put(key string, sourcePath string, ttl time.Duration, metadata m
 		Metadata:  metadata,
 	}
 
+	c.mu.Lock()
 	c.metadata[key] = entry
-	c.saveMetadata()
+	if err := c.saveMetadataLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	c.mu.Unlock()
 
 	log.Debug("Cached", "key", key, "path", destPath)
 	return entry, nil
@@ -255,8 +275,13 @@ func (c *Cache) PutBytes(key string, name string, data []byte, ttl time.Duration
 		Size:      int64(len(data)),
 	}
 
+	c.mu.Lock()
 	c.metadata[key] = entry
-	c.saveMetadata()
+	if err := c.saveMetadataLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	c.mu.Unlock()
 
 	return entry, nil
 }
@@ -276,14 +301,18 @@ func (c *Cache) Delete(key string) error {
 		return nil
 	}
 
+	c.mu.Lock()
 	entry, ok := c.metadata[key]
 	if !ok {
+		c.mu.Unlock()
 		return nil
 	}
 
 	os.Remove(entry.Path)
 	delete(c.metadata, key)
-	return c.saveMetadata()
+	err := c.saveMetadataLocked()
+	c.mu.Unlock()
+	return err
 }
 
 // Clear removes all items from the cache
@@ -292,7 +321,14 @@ func (c *Cache) Clear() error {
 		return nil
 	}
 
+	c.mu.RLock()
+	keys := make([]string, 0, len(c.metadata))
 	for key := range c.metadata {
+		keys = append(keys, key)
+	}
+	c.mu.RUnlock()
+
+	for _, key := range keys {
 		c.Delete(key)
 	}
 
@@ -314,10 +350,17 @@ func (c *Cache) Prune() error {
 	}
 
 	now := time.Now()
+	c.mu.RLock()
+	var keys []string
 	for key, entry := range c.metadata {
 		if now.After(entry.ExpiresAt) {
-			c.Delete(key)
+			keys = append(keys, key)
 		}
+	}
+	c.mu.RUnlock()
+
+	for _, key := range keys {
+		c.Delete(key)
 	}
 
 	return nil
@@ -330,9 +373,11 @@ func (c *Cache) Size() int64 {
 	}
 
 	var total int64
+	c.mu.RLock()
 	for _, entry := range c.metadata {
 		total += entry.Size
 	}
+	c.mu.RUnlock()
 	return total
 }
 
@@ -344,14 +389,17 @@ func (c *Cache) Stats() map[string]interface{} {
 
 	var expired int
 	now := time.Now()
+	c.mu.RLock()
 	for _, entry := range c.metadata {
 		if now.After(entry.ExpiresAt) {
 			expired++
 		}
 	}
+	totalEntries := len(c.metadata)
+	c.mu.RUnlock()
 
 	return map[string]interface{}{
-		"entries":    len(c.metadata),
+		"entries":    totalEntries,
 		"expired":    expired,
 		"size_bytes": c.Size(),
 		"size_human": formatBytes(c.Size()),

@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/oarkflow/releaser/internal/artifact"
+	"github.com/oarkflow/releaser/internal/assets"
 	"github.com/oarkflow/releaser/internal/config"
 	"github.com/oarkflow/releaser/internal/tmpl"
 )
@@ -348,19 +349,26 @@ func (b *AppImageBuilder) createAppImage(ctx context.Context, binary artifact.Ar
 		}
 	}
 
-	// Copy icon if provided
-	if b.config.Icon != "" {
-		iconDest := filepath.Join(usrIconDir, name+filepath.Ext(b.config.Icon))
-		if err := copyFile(b.config.Icon, iconDest); err != nil {
-			log.Warn("Failed to copy icon", "error", err)
+	iconPath := b.config.Icon
+	if iconPath == "" {
+		if iconSet, err := assets.EnsureAppIcon(name, b.distDir); err == nil {
+			iconPath = iconSet.PNG
+		} else {
+			log.Warn("Failed to generate default icon", "error", err)
 		}
-		// Link to AppDir root
-		os.Symlink(filepath.Join("usr", "share", "icons", "hicolor", "256x256", "apps", name+filepath.Ext(b.config.Icon)),
-			filepath.Join(appDir, name+filepath.Ext(b.config.Icon)))
-	} else {
-		// Create a placeholder icon
-		placeholderIcon := filepath.Join(appDir, name+".png")
-		os.WriteFile(placeholderIcon, []byte{}, 0644)
+	}
+	if iconPath != "" {
+		ext := filepath.Ext(iconPath)
+		if ext == "" {
+			ext = ".png"
+		}
+		iconDest := filepath.Join(usrIconDir, name+ext)
+		if err := copyFile(iconPath, iconDest); err != nil {
+			log.Warn("Failed to copy icon", "error", err)
+		} else {
+			_ = os.Symlink(filepath.Join("usr", "share", "icons", "hicolor", "256x256", "apps", name+ext),
+				filepath.Join(appDir, name+ext))
+		}
 	}
 
 	// Create AppRun script

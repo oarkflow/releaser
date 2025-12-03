@@ -11,6 +11,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/charmbracelet/log"
+
 	"github.com/oarkflow/releaser/internal/config"
 	"github.com/oarkflow/releaser/internal/git"
 )
@@ -82,16 +84,42 @@ func (c *Context) init() {
 	} else {
 		c.data["Version"] = "0.0.0-SNAPSHOT"
 		c.data["Tag"] = "v0.0.0-SNAPSHOT"
+		c.data["RawVersion"] = "v0.0.0-SNAPSHOT"
 	}
 
+	c.data["OriginalVersion"] = c.Get("Version")
+	c.data["OriginalRawVersion"] = c.Get("RawVersion")
+
 	if c.snapshot {
-		c.data["Version"] = "0.0.0-SNAPSHOT"
 		c.data["IsSnapshot"] = true
+
+		if version, ok := c.data["Version"].(string); ok && version != "" && version != "0.0.0-SNAPSHOT" {
+			if !strings.HasSuffix(version, "-SNAPSHOT") {
+				c.data["Version"] = version + "-SNAPSHOT"
+			}
+		} else {
+			c.data["Version"] = "0.0.0-SNAPSHOT"
+		}
+
+		if rawVersion, ok := c.data["RawVersion"].(string); ok && rawVersion != "" && rawVersion != "v0.0.0-SNAPSHOT" {
+			if !strings.HasSuffix(rawVersion, "-SNAPSHOT") {
+				c.data["RawVersion"] = rawVersion + "-SNAPSHOT"
+			}
+		} else {
+			c.data["RawVersion"] = "v0.0.0-SNAPSHOT"
+		}
 	}
 
 	if c.nightly {
-		c.data["Version"] = now.Format("20060102")
+		nightlyVersion := now.Format("20060102")
+		c.data["Version"] = nightlyVersion
+		c.data["RawVersion"] = nightlyVersion
 		c.data["IsNightly"] = true
+	}
+
+	c.applyVersionTemplates()
+	if _, ok := c.data["DisplayVersion"]; !ok {
+		c.data["DisplayVersion"] = c.Get("Version")
 	}
 
 	// Date/time
@@ -125,6 +153,35 @@ func (c *Context) init() {
 	c.data["License"] = c.config.Defaults.License
 	c.data["Maintainer"] = c.config.Defaults.Maintainer
 	c.data["Vendor"] = c.config.Defaults.Vendor
+}
+
+func (c *Context) applyVersionTemplates() {
+	versionTemplate := strings.TrimSpace(c.config.Versioning.Template)
+	rawTemplate := strings.TrimSpace(c.config.Versioning.RawTemplate)
+
+	if versionTemplate != "" {
+		if rendered, err := c.Apply(versionTemplate); err != nil {
+			log.Warn("failed to apply version template", "template", versionTemplate, "error", err)
+		} else {
+			c.data["Version"] = rendered
+		}
+	}
+
+	if rawTemplate == "" {
+		rawTemplate = versionTemplate
+	}
+
+	if rawTemplate != "" {
+		if rendered, err := c.Apply(rawTemplate); err != nil {
+			log.Warn("failed to apply raw version template", "template", rawTemplate, "error", err)
+		} else {
+			c.data["RawVersion"] = rendered
+		}
+	}
+
+	if versionTemplate != "" || rawTemplate != "" {
+		c.data["DisplayVersion"] = c.Get("Version")
+	}
 }
 
 // Apply applies the template to a string
