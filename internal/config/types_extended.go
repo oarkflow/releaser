@@ -3,7 +3,7 @@ package config
 // AppBundle represents macOS App Bundle configuration
 type AppBundle struct {
 	ID             string                 `yaml:"id,omitempty"`
-	Build          string                 `yaml:"build,omitempty"`
+	Builds         []string               `yaml:"builds,omitempty"`
 	Name           string                 `yaml:"name,omitempty"`
 	DisplayName    string                 `yaml:"display_name,omitempty"`
 	Identifier     string                 `yaml:"identifier,omitempty"`
@@ -39,6 +39,7 @@ type AppBundleFile struct {
 // DMG represents macOS DMG configuration
 type DMG struct {
 	ID                  string          `yaml:"id,omitempty"`
+	Builds              []string        `yaml:"builds,omitempty"`
 	AppBundle           string          `yaml:"app_bundle,omitempty"`
 	Name                string          `yaml:"name,omitempty"`
 	NameTemplate        string          `yaml:"name_template,omitempty"`
@@ -60,6 +61,7 @@ type DMG struct {
 // PKG represents macOS PKG installer configuration
 type PKG struct {
 	ID              string      `yaml:"id,omitempty"`
+	Builds          []string    `yaml:"builds,omitempty"`
 	AppBundle       string      `yaml:"app_bundle,omitempty"`
 	Name            string      `yaml:"name,omitempty"`
 	NameTemplate    string      `yaml:"name_template,omitempty"`

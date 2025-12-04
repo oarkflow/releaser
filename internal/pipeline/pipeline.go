@@ -6,6 +6,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -171,6 +172,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 // BuildAll builds all artifacts including archives, packages, checksums, and docker images
 func (p *Pipeline) BuildAll(ctx context.Context) error {
 	var allErrors []error
+
+	if p.config.CleanupDistDirs {
+		defer func() {
+			if err := p.cleanupDistDirs(); err != nil {
+				log.Warn("Failed to remove dist folders", "error", err)
+			}
+		}()
+	}
 
 	// Clean dist directory if requested
 	if p.options.Clean {
@@ -465,6 +474,26 @@ func findConfigFile() string {
 func (p *Pipeline) clean() error {
 	log.Info("Cleaning dist directory", "path", p.distDir)
 	return os.RemoveAll(p.distDir)
+}
+
+// cleanupDistDirs removes any directories left inside the dist folder, leaving only final artifacts.
+func (p *Pipeline) cleanupDistDirs() error {
+	entries, err := os.ReadDir(p.distDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(p.distDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runHooks runs before/after hooks

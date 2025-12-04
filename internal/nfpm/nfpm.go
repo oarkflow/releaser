@@ -124,6 +124,7 @@ func (p *Packager) buildPackageWithBinaries(ctx context.Context, binaries []arti
 	if err := p.generateNfpmConfigMulti(nfpmConfigPath, binaries, pkgName, version, normalizedArch, format); err != nil {
 		return fmt.Errorf("failed to generate nfpm config: %w", err)
 	}
+	defer os.Remove(nfpmConfigPath)
 
 	// Generate output filename
 	outputName := fmt.Sprintf("%s_%s_%s.%s", pkgName, version, normalizedArch, format)

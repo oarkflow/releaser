@@ -27,6 +27,9 @@ type Config struct {
 	// Dist is the output directory for artifacts
 	Dist string `yaml:"dist,omitempty"`
 
+	// CleanupDistDirs removes build folders inside dist after packaging completes
+	CleanupDistDirs bool `yaml:"cleanup_dist_dirs,omitempty"`
+
 	// Global defaults
 	Defaults Defaults `yaml:"defaults,omitempty"`
 

@@ -38,9 +38,21 @@ func NewAppBundleBuilder(cfg config.AppBundle, tmplCtx *tmpl.Context, manager *a
 func (b *AppBundleBuilder) Build(ctx context.Context) error {
 	log.Info("Building macOS App Bundle")
 
-	// Get darwin binaries
+	// Get darwin binaries, filtered by build IDs if specified
 	binaries := b.manager.Filter(func(a artifact.Artifact) bool {
-		return a.Type == artifact.TypeBinary && a.Goos == "darwin"
+		if a.Type != artifact.TypeBinary || a.Goos != "darwin" {
+			return false
+		}
+		// If builds are specified, filter by build ID
+		if len(b.config.Builds) > 0 {
+			for _, buildID := range b.config.Builds {
+				if a.BuildID == buildID {
+					return true
+				}
+			}
+			return false
+		}
+		return true
 	})
 
 	if len(binaries) == 0 {
@@ -75,8 +87,10 @@ func (b *AppBundleBuilder) createAppBundle(ctx context.Context, binary artifact.
 		version = b.tmplCtx.Get("Version")
 	}
 
-	// Create app bundle structure
-	appPath := filepath.Join(b.distDir, appName)
+	// Create app bundle structure in an architecture-specific directory
+	// This prevents overwriting when building for multiple architectures (amd64, arm64)
+	archDir := filepath.Join(b.distDir, fmt.Sprintf("darwin_%s", binary.Goarch))
+	appPath := filepath.Join(archDir, appName)
 	contentsPath := filepath.Join(appPath, "Contents")
 	macOSPath := filepath.Join(contentsPath, "MacOS")
 	resourcesPath := filepath.Join(contentsPath, "Resources")
@@ -131,13 +145,14 @@ func (b *AppBundleBuilder) createAppBundle(ctx context.Context, binary artifact.
 		}
 	}
 
-	// Add artifact
+	// Add artifact - preserve BuildID from source binary
 	b.manager.Add(artifact.Artifact{
-		Name:   appName,
-		Path:   appPath,
-		Type:   artifact.TypeAppBundle,
-		Goos:   "darwin",
-		Goarch: binary.Goarch,
+		Name:    appName,
+		Path:    appPath,
+		Type:    artifact.TypeAppBundle,
+		Goos:    "darwin",
+		Goarch:  binary.Goarch,
+		BuildID: binary.BuildID,
 	})
 
 	log.Info("App Bundle created", "name", appName)
@@ -215,13 +230,39 @@ func NewDMGBuilder(cfg config.DMG, tmplCtx *tmpl.Context, manager *artifact.Mana
 func (b *DMGBuilder) Build(ctx context.Context) error {
 	log.Info("Building DMG disk image")
 
-	// Get app bundles
-	appBundles := b.manager.Filter(artifact.ByType(artifact.TypeAppBundle))
+	// Get app bundles, filtered by build IDs if specified
+	appBundles := b.manager.Filter(func(a artifact.Artifact) bool {
+		if a.Type != artifact.TypeAppBundle {
+			return false
+		}
+		// If builds are specified, filter by build ID
+		if len(b.config.Builds) > 0 {
+			for _, buildID := range b.config.Builds {
+				if a.BuildID == buildID {
+					return true
+				}
+			}
+			return false
+		}
+		return true
+	})
 
 	if len(appBundles) == 0 {
 		// Try to create app bundles first from darwin binaries
 		binaries := b.manager.Filter(func(a artifact.Artifact) bool {
-			return a.Type == artifact.TypeBinary && a.Goos == "darwin"
+			if a.Type != artifact.TypeBinary || a.Goos != "darwin" {
+				return false
+			}
+			// If builds are specified, filter by build ID
+			if len(b.config.Builds) > 0 {
+				for _, buildID := range b.config.Builds {
+					if a.BuildID == buildID {
+						return true
+					}
+				}
+				return false
+			}
+			return true
 		})
 		if len(binaries) == 0 {
 			log.Debug("No App Bundles or darwin binaries found for DMG creation, skipping")
@@ -230,7 +271,9 @@ func (b *DMGBuilder) Build(ctx context.Context) error {
 		// Create simple app bundles for the binaries
 		for _, binary := range binaries {
 			appName := b.tmplCtx.Get("ProjectName") + ".app"
-			appPath := filepath.Join(b.distDir, fmt.Sprintf("%s_%s", appName, binary.Goarch))
+			// Create app bundle in architecture-specific directory
+			archDir := filepath.Join(b.distDir, fmt.Sprintf("darwin_%s", binary.Goarch))
+			appPath := filepath.Join(archDir, appName)
 			contentsPath := filepath.Join(appPath, "Contents")
 			macOSPath := filepath.Join(contentsPath, "MacOS")
 
@@ -265,11 +308,12 @@ func (b *DMGBuilder) Build(ctx context.Context) error {
 			os.WriteFile(plistPath, []byte(plist), 0644)
 
 			appBundles = append(appBundles, artifact.Artifact{
-				Name:   appName,
-				Path:   appPath,
-				Type:   artifact.TypeAppBundle,
-				Goos:   "darwin",
-				Goarch: binary.Goarch,
+				Name:    appName,
+				Path:    appPath,
+				Type:    artifact.TypeAppBundle,
+				Goos:    "darwin",
+				Goarch:  binary.Goarch,
+				BuildID: binary.BuildID,
 			})
 		}
 	}

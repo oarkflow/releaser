@@ -3,16 +3,17 @@
 
 version: 2
 
-project_name: myapp
+project_name: secretr
+cleanup_dist_dirs: true
 
 versioning:
   template: '{{ if .IsSnapshot }}{{ .OriginalVersion }}{{ else }}{{ .Version }}{{ end }}'
 
 defaults:
-  homepage: https://github.com/example/myapp
+  homepage: https://github.com/verishore/secretr
   description: A multi-binary application with CLI and GUI components
   license: MIT
-  maintainer: developer@example.com
+  maintainer: developer@verishore.com
 
 env:
   - GO111MODULE=on
@@ -22,7 +23,7 @@ builds:
   # CLI binary - installed to /usr/bin, available in PATH
   - id: cli
     main: ./cmd
-    binary: myapp
+    binary: secretr
     type: cli  # CLI type installs to system PATH
     obfuscation:
       enabled: true
@@ -62,18 +63,16 @@ builds:
   # For full cross-platform GUI builds, use fyne-cross or build on each platform.
   - id: gui
     main: ./gui/cmd
-    binary: myapp-gui
+    binary: secretr-gui
     type: gui  # GUI type creates desktop entries and app bundles
     goos:
       - linux
       - windows
+      - darwin
     goarch:
       - amd64
-    # Cross-compiled GUI builds are complex - limit to native + windows
-    # For full cross-platform support, use fyne-cross tool
-    ignore:
-      - goos: darwin  # Requires osxcross with macOS SDK
-      - goarch: arm64  # Requires cross-compiled X11 headers
+      - arm64
+    # Cross-compiled GUI builds are complex - build natively for macOS targets
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -90,36 +89,34 @@ builds:
           cxx: zig c++ -target x86_64-windows-gnu
     # GUI-specific metadata
     gui:
-      name: "MyApp"
-      icon: "icons/myapp.png"
-      comment: "MyApp GUI - A graphical interface for MyApp"
+      name: "Secretr"
+      comment: "Secretr GUI - A graphical interface for Secretr"
       generic_name: "Application Manager"
       categories:
         - Utility
         - Development
       keywords:
-        - myapp
+        - secretr
         - utility
         - gui
       startup_notify: true
       terminal: false
       mime_types:
-        - application/x-myapp
+        - application/x-secretr
       # macOS specific
       macos:
-        bundle_id: "com.example.myapp"
+        bundle_id: "com.verishore.secretr"
         minimum_system_version: "10.13"
         high_resolution_capable: true
         info_plist:
-          NSHumanReadableCopyright: "Copyright © 2025 Example Inc."
+          NSHumanReadableCopyright: "Copyright © 2025 Verishore LLC"
       # Windows specific
       windows:
-        icon: "icons/myapp.ico"
-        start_menu_folder: "MyApp"
+        start_menu_folder: "Secretr"
         desktop_shortcut: true
         file_associations:
-          - extension: ".myapp"
-            description: "MyApp Document"
+          - extension: ".secretr"
+            description: "Secretr Document"
 
 # Archives for distribution
 archives:
@@ -146,20 +143,19 @@ archives:
     files:
       - LICENSE*
       - README*
-      - icons/*
 
 # Linux packages - includes both CLI and GUI
 nfpms:
   - id: all-packages
-    package_name: myapp
+    package_name: secretr
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    vendor: Example Inc.
-    maintainer: developer@example.com
+    vendor: Verishore LLC
+    maintainer: developer@verishore.com
     description: |
-      MyApp - A multi-binary application
+      Secretr - A multi-binary application
       Includes:
-        - myapp: Command-line interface
-        - myapp-gui: Graphical user interface
+        - secretr: Command-line interface
+        - secretr-gui: Graphical user interface
     license: MIT
     formats:
       - deb
@@ -169,8 +165,8 @@ nfpms:
     # The GUI binary will automatically get a .desktop file generated
     contents:
       # Additional config files
-      - src: ./config.example.yaml
-        dst: /etc/myapp/config.yaml
+      - src: ./config.verishore.yaml
+        dst: /etc/secretr/config.yaml
         type: config|noreplace
     # Dependencies vary by package format:
     # - deb: libgtk-3-0, libgl1
@@ -198,14 +194,13 @@ app_bundles:
   - id: gui-app
     builds:
       - gui
-    name: "MyApp"
-    identifier: "com.example.myapp"
-    icon: "icons/myapp.icns"
+    name: "Secretr"
+    identifier: "com.verishore.secretr"
     category: "public.app-category.utilities"
     high_resolution_capable: true
     minimum_system_version: "10.13"
     info_plist:
-      NSHumanReadableCopyright: "Copyright © 2025 Example Inc."
+      NSHumanReadableCopyright: "Copyright © 2025 Verishore LLC"
       CFBundleShortVersionString: "{{ .Version }}"
 
 # macOS DMG with App Bundle
@@ -213,24 +208,27 @@ dmgs:
   - id: gui-dmg
     builds:
       - gui
-    name: "MyApp"
+    name: "Secretr"
     name_template: "{{ .ProjectName }}_{{ .Version }}_macOS"
-    title: "MyApp {{ .Version }}"
+    title: "Secretr {{ .Version }}"
     window_size:
       width: 660
       height: 400
     contents:
       - type: app
-        path: "MyApp.app"
+        path: "Secretr.app"
       - type: link
         path: /Applications
 
 # macOS PKG for GUI
 pkgs:
   - id: gui-pkg
-    name: "MyApp"
-    identifier: "com.example.myapp.pkg"
-    install_location: "/Applications"
+    builds:
+      - gui
+      - cli
+    name: "Secretr"
+    identifier: "com.verishore.secretr.pkg"
+    install_location: "/"
 
 # Windows MSI Installer
 msis:
@@ -238,12 +236,11 @@ msis:
     builds:
       - cli
       - gui
-    name: "MyApp"
-    manufacturer: "Example Inc."
+    name: "Secretr"
+    manufacturer: "Verishore LLC"
     product_version: "{{ .Version }}"
     upgrade_code: "12345678-1234-1234-1234-123456789012"
-    install_dir: "MyApp"
-    icon: "icons/myapp.ico"
+    install_dir: "Secretr"
 
 # Windows NSIS Installer (alternative to MSI)
 nsiss:
@@ -251,9 +248,8 @@ nsiss:
     builds:
       - cli
       - gui
-    name: "MyApp"
+    name: "Secretr"
     license: "LICENSE"
-    icon: "icons/myapp.ico"
 
 # Checksums
 checksum:
@@ -262,26 +258,26 @@ checksum:
 
 # Homebrew for macOS CLI
 brews:
-  - name: myapp
+  - name: secretr
     repository:
-      owner: example
+      owner: verishore
       name: homebrew-tap
     folder: Formula
-    homepage: https://github.com/example/myapp
-    description: MyApp CLI - A command-line utility
+    homepage: https://github.com/verishore/secretr
+    description: Secretr CLI - A command-line utility
     license: MIT
     test: |
-      system "#{bin}/myapp", "--version"
+      system "#{bin}/secretr", "--version"
     install: |
-      bin.install "myapp"
+      bin.install "secretr"
 
 # Scoop for Windows CLI
 scoops:
   - repository:
-      owner: example
+      owner: verishore
       name: scoop-bucket
-    homepage: https://github.com/example/myapp
-    description: MyApp CLI - A command-line utility
+    homepage: https://github.com/verishore/secretr
+    description: Secretr CLI - A command-line utility
     license: MIT
 
 # Changelog
@@ -299,8 +295,8 @@ changelog:
 # Release configuration
 release:
   github:
-    owner: example
-    name: myapp
+    owner: verishore
+    name: secretr
   draft: false
   prerelease: auto
   name_template: "{{.ProjectName}} v{{.Version}}"

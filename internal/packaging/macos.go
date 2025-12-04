@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,28 +38,37 @@ func NewPKGBuilder(cfg config.PKG, tmplCtx *tmpl.Context, manager *artifact.Mana
 func (b *PKGBuilder) Build(ctx context.Context) error {
 	log.Info("Building macOS PKG installer")
 
-	// Get app bundles or darwin binaries
 	var sources []artifact.Artifact
+
+	// Collect App Bundles first
 	if b.config.AppBundle != "" {
-		// Use specified app bundle
-		sources = b.manager.Filter(func(a artifact.Artifact) bool {
+		sources = append(sources, b.manager.Filter(func(a artifact.Artifact) bool {
 			return a.Type == artifact.TypeAppBundle && a.Name == b.config.AppBundle+".app"
-		})
+		})...)
 	} else {
-		// Use app bundles
-		sources = b.manager.Filter(artifact.ByType(artifact.TypeAppBundle))
+		sources = append(sources, b.manager.Filter(func(a artifact.Artifact) bool {
+			return a.Type == artifact.TypeAppBundle && b.matchesBuild(a.BuildID)
+		})...)
 	}
 
-	if len(sources) == 0 {
-		// Fall back to darwin binaries
-		sources = b.manager.Filter(func(a artifact.Artifact) bool {
-			return a.Type == artifact.TypeBinary && a.Goos == "darwin"
-		})
-	}
+	// Collect darwin binaries (CLI, helpers, etc.)
+	sources = append(sources, b.manager.Filter(func(a artifact.Artifact) bool {
+		return a.Type == artifact.TypeBinary && a.Goos == "darwin" && b.matchesBuild(a.BuildID)
+	})...)
 
 	if len(sources) == 0 {
 		log.Debug("No darwin artifacts found for PKG creation, skipping")
 		return nil
+	}
+
+	// Group artifacts by architecture so we can bundle multiple binaries together
+	grouped := make(map[string][]artifact.Artifact)
+	for _, src := range sources {
+		arch := src.Goarch
+		if arch == "" {
+			arch = "universal"
+		}
+		grouped[arch] = append(grouped[arch], src)
 	}
 
 	// Check if pkgbuild is available
@@ -67,15 +77,15 @@ func (b *PKGBuilder) Build(ctx context.Context) error {
 		hasPkgbuild = true
 	}
 
-	for _, source := range sources {
+	for arch, artifacts := range grouped {
 		if hasPkgbuild {
-			if err := b.createPKG(ctx, source); err != nil {
-				return fmt.Errorf("failed to create PKG for %s: %w", source.Name, err)
+			if err := b.createPKG(ctx, artifacts, arch); err != nil {
+				return fmt.Errorf("failed to create PKG for %s (%s): %w", artifacts[0].Name, arch, err)
 			}
 		} else {
 			// Create an installer package structure for later use on macOS
-			if err := b.createPkgStructure(ctx, source); err != nil {
-				return fmt.Errorf("failed to create PKG structure for %s: %w", source.Name, err)
+			if err := b.createPkgStructure(ctx, artifacts, arch); err != nil {
+				return fmt.Errorf("failed to create PKG structure for %s (%s): %w", artifacts[0].Name, arch, err)
 			}
 		}
 	}
@@ -84,7 +94,7 @@ func (b *PKGBuilder) Build(ctx context.Context) error {
 }
 
 // createPkgStructure creates a PKG-like structure when pkgbuild isn't available
-func (b *PKGBuilder) createPkgStructure(ctx context.Context, source artifact.Artifact) error {
+func (b *PKGBuilder) createPkgStructure(ctx context.Context, sources []artifact.Artifact, arch string) error {
 	name := b.config.Name
 	if name == "" {
 		name = b.tmplCtx.Get("ProjectName")
@@ -100,25 +110,13 @@ func (b *PKGBuilder) createPkgStructure(ctx context.Context, source artifact.Art
 		identifier = fmt.Sprintf("com.example.%s", name)
 	}
 
+	installLocation := b.determineInstallLocation(sources)
+
 	// Create a tar.gz package with macOS installer structure
-	pkgDirName := fmt.Sprintf("%s_%s_%s_macos_pkg", name, version, source.Goarch)
+	pkgDirName := fmt.Sprintf("%s_%s_%s_macos_pkg", name, version, arch)
 	pkgDir := filepath.Join(b.distDir, pkgDirName)
-
-	// Create standard macOS package structure
-	var payloadDir, scriptsDir string
-	var binaryPath string
-
-	if source.Type == artifact.TypeAppBundle {
-		// For app bundles, install to /Applications
-		payloadDir = filepath.Join(pkgDir, "payload", "Applications")
-		scriptsDir = filepath.Join(pkgDir, "scripts")
-		binaryPath = source.Path
-	} else {
-		// For binaries, install to /usr/local/bin
-		payloadDir = filepath.Join(pkgDir, "payload", "usr", "local", "bin")
-		scriptsDir = filepath.Join(pkgDir, "scripts")
-		binaryPath = source.Path
-	}
+	payloadDir := filepath.Join(pkgDir, "payload")
+	scriptsDir := filepath.Join(pkgDir, "scripts")
 
 	for _, dir := range []string{payloadDir, scriptsDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -126,29 +124,13 @@ func (b *PKGBuilder) createPkgStructure(ctx context.Context, source artifact.Art
 		}
 	}
 
-	// Copy source (binary or app bundle)
-	if source.Type == artifact.TypeAppBundle {
-		// Copy entire app bundle directory
-		destPath := filepath.Join(payloadDir, filepath.Base(source.Path))
-		if err := copyDirPkg(source.Path, destPath); err != nil {
-			return err
-		}
-	} else {
-		// Copy single binary file
-		binaryDest := filepath.Join(payloadDir, filepath.Base(binaryPath))
-		if err := copyFilePkg(binaryPath, binaryDest); err != nil {
-			return err
-		}
-		os.Chmod(binaryDest, 0755)
+	if err := b.stageSources(payloadDir, sources, installLocation); err != nil {
+		return err
 	}
 
-	// Create postinstall script
-	postinstall := fmt.Sprintf(`#!/bin/bash
-echo "Installing %s..."
-chmod +x /usr/local/bin/%s
-echo "Installation complete!"
-`, name, filepath.Base(source.Path))
-	os.WriteFile(filepath.Join(scriptsDir, "postinstall"), []byte(postinstall), 0755)
+	if err := b.writeFallbackPostinstall(scriptsDir, installLocation, sources); err != nil {
+		return err
+	}
 
 	// Create Distribution.xml for productbuild
 	distXml := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
@@ -170,7 +152,9 @@ echo "Installation complete!"
     <pkg-ref id="%s" version="%s" onConclusion="none">%s.pkg</pkg-ref>
 </installer-gui-script>
 `, name, identifier, identifier, identifier, identifier, identifier, identifier, version, name)
-	os.WriteFile(filepath.Join(pkgDir, "Distribution.xml"), []byte(distXml), 0644)
+	if err := os.WriteFile(filepath.Join(pkgDir, "Distribution.xml"), []byte(distXml), 0644); err != nil {
+		return err
+	}
 
 	// Create README
 	readme := fmt.Sprintf(`# %s macOS Installer
@@ -181,10 +165,12 @@ This package can be built into a .pkg installer on macOS using:
     pkgbuild --root payload --scripts scripts --identifier %s --version %s %s.pkg
     productbuild --distribution Distribution.xml --package-path . %s_%s.pkg
 
-Or install manually:
-    cp payload/usr/local/bin/* /usr/local/bin/
-`, name, pkgDirName, identifier, version, name, name, version)
-	os.WriteFile(filepath.Join(pkgDir, "README.txt"), []byte(readme), 0644)
+Or install manually (from target root):
+    sudo rsync -a payload/ %s/
+`, name, pkgDirName, identifier, version, name, name, version, installLocation)
+	if err := os.WriteFile(filepath.Join(pkgDir, "README.txt"), []byte(readme), 0644); err != nil {
+		return err
+	}
 
 	// Create tar.gz of the structure
 	tarFileName := pkgDirName + ".tar.gz"
@@ -204,7 +190,7 @@ Or install manually:
 		Path:   tarPath,
 		Type:   artifact.TypeArchive,
 		Goos:   "darwin",
-		Goarch: source.Goarch,
+		Goarch: arch,
 		Extra: map[string]interface{}{
 			"format":    "tar.gz",
 			"installer": true,
@@ -216,8 +202,12 @@ Or install manually:
 	return nil
 }
 
-// createPKG creates a PKG from a source artifact.
-func (b *PKGBuilder) createPKG(ctx context.Context, source artifact.Artifact) error {
+// createPKG creates a PKG from one or more artifacts of the same architecture.
+func (b *PKGBuilder) createPKG(ctx context.Context, sources []artifact.Artifact, arch string) error {
+	if len(sources) == 0 {
+		return fmt.Errorf("no sources provided for PKG creation")
+	}
+
 	name := b.config.Name
 	if name == "" {
 		name = b.tmplCtx.Get("ProjectName")
@@ -233,17 +223,28 @@ func (b *PKGBuilder) createPKG(ctx context.Context, source artifact.Artifact) er
 		identifier = fmt.Sprintf("com.example.%s", name)
 	}
 
-	pkgFileName := fmt.Sprintf("%s_%s_%s.pkg", name, version, source.Goarch)
+	pkgFileName := fmt.Sprintf("%s_%s_%s.pkg", name, version, arch)
 	pkgPath := filepath.Join(b.distDir, pkgFileName)
 
-	// Determine install location
-	installLocation := b.config.InstallLocation
-	if installLocation == "" {
-		if source.Type == artifact.TypeAppBundle {
-			installLocation = "/Applications"
-		} else {
-			installLocation = "/usr/local/bin"
-		}
+	installLocation := b.determineInstallLocation(sources)
+
+	// Create a staging directory with ONLY the source artifacts
+	stagingDir, err := os.MkdirTemp("", "pkg-staging-")
+	if err != nil {
+		return fmt.Errorf("failed to create staging directory: %w", err)
+	}
+	defer os.RemoveAll(stagingDir)
+
+	if err := b.stageSources(stagingDir, sources, installLocation); err != nil {
+		return err
+	}
+
+	componentPlistPath, err := b.generateComponentPlist(sources, installLocation)
+	if err != nil {
+		return err
+	}
+	if componentPlistPath != "" {
+		defer os.Remove(componentPlistPath)
 	}
 
 	// Create scripts directory if needed
@@ -273,12 +274,12 @@ func (b *PKGBuilder) createPKG(ctx context.Context, source artifact.Artifact) er
 	// Build component package first
 	componentPkgPath := pkgPath
 	if b.config.Distribution != "" || len(b.config.ExtraFiles) > 0 {
-		componentPkgPath = filepath.Join(b.distDir, fmt.Sprintf("%s-component.pkg", name))
+		componentPkgPath = filepath.Join(b.distDir, fmt.Sprintf("%s-component-%s.pkg", name, arch))
 	}
 
-	// Build pkgbuild arguments
+	// Build pkgbuild arguments - use the staging directory as root
 	args := []string{
-		"--root", filepath.Dir(source.Path),
+		"--root", stagingDir,
 		"--identifier", identifier,
 		"--version", version,
 		"--install-location", installLocation,
@@ -286,6 +287,9 @@ func (b *PKGBuilder) createPKG(ctx context.Context, source artifact.Artifact) er
 
 	if scriptsDir != "" {
 		args = append(args, "--scripts", scriptsDir)
+	}
+	if componentPlistPath != "" {
+		args = append(args, "--component-plist", componentPlistPath)
 	}
 
 	// Sign if configured
@@ -330,7 +334,7 @@ func (b *PKGBuilder) createPKG(ctx context.Context, source artifact.Artifact) er
 		Path:   pkgPath,
 		Type:   artifact.TypePKG,
 		Goos:   "darwin",
-		Goarch: source.Goarch,
+		Goarch: arch,
 	})
 
 	log.Info("PKG created", "name", pkgFileName)
@@ -407,6 +411,152 @@ func (b *PKGBuilder) notarizePKG(ctx context.Context, pkgPath string) error {
 
 	log.Info("PKG notarized successfully")
 	return nil
+}
+
+// matchesBuild returns true when the artifact build ID should be included for this PKG.
+func (b *PKGBuilder) matchesBuild(buildID string) bool {
+	if len(b.config.Builds) == 0 {
+		return true
+	}
+	for _, id := range b.config.Builds {
+		if id == buildID {
+			return true
+		}
+	}
+	return false
+}
+
+// determineInstallLocation picks a sensible default when none is provided.
+func (b *PKGBuilder) determineInstallLocation(sources []artifact.Artifact) string {
+	if b.config.InstallLocation != "" {
+		return b.config.InstallLocation
+	}
+	hasApp := false
+	hasBin := false
+	for _, src := range sources {
+		if src.Type == artifact.TypeAppBundle {
+			hasApp = true
+		} else if src.Type == artifact.TypeBinary {
+			hasBin = true
+		}
+	}
+	switch {
+	case hasApp && hasBin:
+		return "/"
+	case hasApp:
+		return "/Applications"
+	default:
+		return "/usr/local/bin"
+	}
+}
+
+// relativeInstallPath determines where an artifact should be placed inside the staging directory.
+func (b *PKGBuilder) relativeInstallPath(source artifact.Artifact, installLocation string) string {
+	base := filepath.Base(source.Path)
+	if installLocation == "" {
+		installLocation = "/"
+	}
+	if installLocation == "/" {
+		if source.Type == artifact.TypeAppBundle {
+			return filepath.Join("Applications", base)
+		}
+		return filepath.Join("usr", "local", "bin", base)
+	}
+	return base
+}
+
+// stageSources copies the desired artifacts into the staging directory, preserving structure.
+func (b *PKGBuilder) stageSources(root string, sources []artifact.Artifact, installLocation string) error {
+	for _, source := range sources {
+		rel := b.relativeInstallPath(source, installLocation)
+		destPath := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+		if source.Type == artifact.TypeAppBundle {
+			if err := copyDirPkg(source.Path, destPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFilePkg(source.Path, destPath); err != nil {
+				return err
+			}
+			os.Chmod(destPath, 0755)
+		}
+	}
+	return nil
+}
+
+// generateComponentPlist marks bundled apps as non-relocatable so Installer honors our target paths.
+func (b *PKGBuilder) generateComponentPlist(sources []artifact.Artifact, installLocation string) (string, error) {
+	var bundlePaths []string
+	for _, source := range sources {
+		if source.Type != artifact.TypeAppBundle {
+			continue
+		}
+		bundlePaths = append(bundlePaths, b.relativeInstallPath(source, installLocation))
+	}
+	if len(bundlePaths) == 0 {
+		return "", nil
+	}
+
+	file, err := os.CreateTemp("", "pkg-component-*.plist")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	var buf bytes.Buffer
+	buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+`)
+	for _, relPath := range bundlePaths {
+		fmt.Fprintf(&buf, "\t<dict>\n")
+		buf.WriteString("\t\t<key>BundleIsRelocatable</key>\n\t\t<false/>\n")
+		buf.WriteString("\t\t<key>BundleIsVersionChecked</key>\n\t\t<true/>\n")
+		buf.WriteString("\t\t<key>BundleHasStrictIdentifier</key>\n\t\t<true/>\n")
+		buf.WriteString("\t\t<key>BundleOverwriteAction</key>\n\t\t<string>upgrade</string>\n")
+		fmt.Fprintf(&buf, "\t\t<key>RootRelativeBundlePath</key>\n\t\t<string>%s</string>\n", html.EscapeString(relPath))
+		buf.WriteString("\t</dict>\n")
+	}
+	buf.WriteString("</array>\n</plist>\n")
+
+	if _, err := file.Write(buf.Bytes()); err != nil {
+		return "", err
+	}
+
+	return file.Name(), nil
+}
+
+// collectBinaryNames extracts binary names for helper scripts.
+func (b *PKGBuilder) collectBinaryNames(sources []artifact.Artifact) []string {
+	var binaries []string
+	for _, src := range sources {
+		if src.Type == artifact.TypeBinary {
+			binaries = append(binaries, filepath.Base(src.Path))
+		}
+	}
+	return binaries
+}
+
+// writeFallbackPostinstall writes a simple postinstall script for the manual PKG structure fallback.
+func (b *PKGBuilder) writeFallbackPostinstall(dir, installLocation string, sources []artifact.Artifact) error {
+	binaryNames := b.collectBinaryNames(sources)
+	if len(binaryNames) == 0 {
+		return nil
+	}
+	script := "#!/bin/bash\nset -e\n"
+	for _, bin := range binaryNames {
+		if installLocation == "/" {
+			script += fmt.Sprintf("chmod +x /usr/local/bin/%s\n", bin)
+		} else {
+			script += fmt.Sprintf("chmod +x %s/%s\n", installLocation, bin)
+		}
+	}
+	script += "exit 0\n"
+	return os.WriteFile(filepath.Join(dir, "postinstall"), []byte(script), 0755)
 }
 
 // UniversalBinaryBuilder creates macOS universal binaries.
