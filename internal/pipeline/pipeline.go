@@ -170,61 +170,70 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
 // BuildAll builds all artifacts including archives, packages, checksums, and docker images
 func (p *Pipeline) BuildAll(ctx context.Context) error {
+	var allErrors []error
+
 	// Clean dist directory if requested
 	if p.options.Clean {
 		if err := p.clean(); err != nil {
-			return err
+			allErrors = append(allErrors, fmt.Errorf("clean failed: %w", err))
 		}
 	}
 
 	// Create dist directory
 	if err := os.MkdirAll(p.distDir, 0755); err != nil {
-		return fmt.Errorf("failed to create dist directory: %w", err)
+		allErrors = append(allErrors, fmt.Errorf("failed to create dist directory: %w", err))
+		// If we can't create dist dir, we can't continue
+		return fmt.Errorf("setup failed: %v", allErrors)
 	}
 
 	// Build artifacts
 	if err := p.Build(ctx); err != nil {
-		return err
+		allErrors = append(allErrors, err)
 	}
 
 	// Create archives
 	if err := p.archive(ctx); err != nil {
-		return err
+		allErrors = append(allErrors, err)
 	}
 
 	// Create packages (nfpm, snapcraft, etc.)
 	if err := p.packages(ctx); err != nil {
-		return err
+		allErrors = append(allErrors, err)
 	}
 
 	// Create platform-specific packages (macOS, Windows)
 	if err := p.platformPackages(ctx); err != nil {
-		return err
+		allErrors = append(allErrors, err)
 	}
 
 	// Create checksums
 	if err := p.checksum(ctx); err != nil {
-		return err
+		allErrors = append(allErrors, err)
 	}
 
 	// Sign artifacts
 	if !p.options.SkipSign {
 		if err := p.sign(ctx); err != nil {
-			return err
+			allErrors = append(allErrors, err)
 		}
 	}
 
 	// Build Docker images
 	if !p.options.SkipDocker {
 		if err := p.docker(ctx); err != nil {
-			return err
+			allErrors = append(allErrors, err)
 		}
 
 		if err := p.dockerExports(); err != nil {
-			return err
+			allErrors = append(allErrors, err)
 		}
 	}
 
+	if len(allErrors) > 0 {
+		return fmt.Errorf("build pipeline completed with %d errors: %v", len(allErrors), allErrors)
+	}
+
+	log.Info("Build pipeline completed successfully")
 	return nil
 }
 
@@ -241,6 +250,22 @@ func (p *Pipeline) Build(ctx context.Context) error {
 	if err := p.ensureBuildDependencies(); err != nil {
 		return fmt.Errorf("dependency check failed: %w", err)
 	}
+
+	// Create a build context with overall timeout to prevent deadlocks
+	var buildCtx context.Context
+	var cancel context.CancelFunc
+	if p.options.Timeout != "" {
+		timeout, err := time.ParseDuration(p.options.Timeout)
+		if err != nil {
+			// Default timeout if parsing fails
+			timeout = 2 * time.Hour
+		}
+		buildCtx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		// Default 2 hour timeout for builds
+		buildCtx, cancel = context.WithTimeout(ctx, 2*time.Hour)
+	}
+	defer cancel()
 
 	// Filter targets if single-target mode
 	targets := p.getTargets()
@@ -262,6 +287,9 @@ func (p *Pipeline) Build(ctx context.Context) error {
 	errCh := make(chan error, len(targets))
 	var wg sync.WaitGroup
 
+	// Use the build context with timeout for all operations
+	ctx = buildCtx
+
 	for _, build := range p.config.Builds {
 		if build.Skip {
 			continue
@@ -275,11 +303,29 @@ func (p *Pipeline) Build(ctx context.Context) error {
 			wg.Add(1)
 			go func(b config.Build, t BuildTarget) {
 				defer wg.Done()
-				sem <- struct{}{}
+
+				// Create a timeout context for this build to prevent deadlock
+				buildCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+				defer cancel()
+
+				// Acquire semaphore with context awareness to prevent deadlock
+				select {
+				case sem <- struct{}{}:
+					// Successfully acquired semaphore slot
+				case <-buildCtx.Done():
+					// Context cancelled while waiting for semaphore
+					errCh <- fmt.Errorf("build %s for %s cancelled while waiting for resources: %w", b.ID, t.String(), buildCtx.Err())
+					return
+				}
+
+				// Ensure semaphore is released
 				defer func() { <-sem }()
 
-				if err := p.buildTarget(ctx, b, t); err != nil {
-					errCh <- fmt.Errorf("build %s for %s failed: %w", b.ID, t.String(), err)
+				if err := p.buildTarget(buildCtx, b, t); err != nil {
+					select {
+					case errCh <- fmt.Errorf("build %s for %s failed: %w", b.ID, t.String(), err):
+					case <-ctx.Done():
+					}
 				}
 			}(build, target)
 		}
@@ -288,11 +334,27 @@ func (p *Pipeline) Build(ctx context.Context) error {
 	wg.Wait()
 	close(errCh)
 
-	// Collect errors
+	// Collect errors with timeout to prevent deadlock
 	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Use select with timeout to prevent hanging on channel read
+	for {
+		select {
+		case err, ok := <-errCh:
+			if !ok {
+				// Channel closed, we're done
+				goto collect_done
+			}
+			errs = append(errs, err)
+		case <-timeoutCtx.Done():
+			log.Warn("Timeout waiting for error channel, some errors may not be collected")
+			goto collect_done
+		}
 	}
+
+collect_done:
 
 	if len(errs) > 0 {
 		return fmt.Errorf("build failed with %d errors: %v", len(errs), errs)
@@ -524,44 +586,53 @@ func (p *Pipeline) shouldBuild(build config.Build, target BuildTarget) bool {
 
 // buildTarget builds a single target
 func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target BuildTarget) error {
-	log.Info("Building", "build", build.ID, "target", target.String())
+	log.Info("Starting build", "build", build.ID, "target", target.String(), "builder", build.Builder)
 
 	// Create output directory
 	outputDir := filepath.Join(p.distDir, build.ID+"_"+target.String())
+	log.Debug("Creating output directory", "path", outputDir)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return err
+		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	// Determine binary name
 	binary := build.Binary
 	if binary == "" {
 		binary = p.config.ProjectName
+		log.Debug("Using project name as binary name", "name", binary)
 	}
 	if target.OS == "windows" {
 		binary += ".exe"
+		log.Debug("Adding Windows extension", "binary", binary)
 	}
 
 	// Template the binary name
+	log.Debug("Templating binary name", "template", binary)
 	binary, err := p.templateCtx.Apply(binary)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to template binary name: %w", err)
 	}
+	log.Debug("Final binary name", "name", binary)
 
 	outputPath := filepath.Join(outputDir, binary)
+	log.Debug("Output path", "path", outputPath)
 
 	// Check build cache
 	cacheKey := ""
 	if p.buildCache != nil && !p.options.SkipCache {
+		log.Debug("Checking build cache")
+
 		// Generate cache key from build config, target, and source hash
 		sourcePatterns := []string{"*.go", "go.mod", "go.sum"}
 		if build.Builder == "rust" {
 			sourcePatterns = []string{"*.rs", "Cargo.toml", "Cargo.lock"}
 		}
+		log.Debug("Generating cache key", "patterns", sourcePatterns)
 		cacheKey = p.buildCache.BuildKey(target.OS, target.Arch, binary, sourcePatterns)
 
 		// Check if we have a cached binary
 		if cachedPath, found := p.buildCache.GetBinary(cacheKey); found {
-			log.Info("Using cached binary", "target", target.String())
+			log.Info("Cache hit - using cached binary", "target", target.String(), "cache_key", cacheKey)
 			if err := copyFile(cachedPath, outputPath); err == nil {
 				// Register artifact
 				p.mu.Lock()
@@ -578,33 +649,48 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 					},
 				})
 				p.mu.Unlock()
+				log.Info("Build completed using cache", "build", build.ID, "target", target.String())
 				return nil
+			} else {
+				log.Warn("Failed to copy cached binary, proceeding with fresh build", "error", err)
 			}
+		} else {
+			log.Debug("Cache miss - no cached binary found", "cache_key", cacheKey)
 		}
+	} else {
+		log.Debug("Build cache disabled or not available")
 	}
 
+	log.Info("Building from source", "build", build.ID, "target", target.String(), "builder", build.Builder)
+
 	// Build based on builder type
+	var buildErr error
 	switch build.Builder {
 	case "", "go":
-		if err := p.buildGo(ctx, build, target, outputPath); err != nil {
-			return err
-		}
+		log.Debug("Using Go builder")
+		buildErr = p.buildGo(ctx, build, target, outputPath)
 	case "rust":
-		if err := p.buildRust(ctx, build, target, outputPath); err != nil {
-			return err
-		}
+		log.Debug("Using Rust builder")
+		buildErr = p.buildRust(ctx, build, target, outputPath)
 	case "prebuilt":
-		if err := p.copyPrebuilt(ctx, build, target, outputPath); err != nil {
-			return err
-		}
+		log.Debug("Using prebuilt builder")
+		buildErr = p.copyPrebuilt(ctx, build, target, outputPath)
 	default:
-		return fmt.Errorf("unknown builder: %s", build.Builder)
+		buildErr = fmt.Errorf("unknown builder: %s", build.Builder)
+	}
+
+	if buildErr != nil {
+		log.Error("Build failed", "build", build.ID, "target", target.String(), "error", buildErr)
+		return fmt.Errorf("build failed: %w", buildErr)
 	}
 
 	// Cache the built binary
 	if p.buildCache != nil && cacheKey != "" && !p.options.SkipCache {
+		log.Debug("Caching built binary")
 		if err := p.buildCache.PutBinary(cacheKey, outputPath, target.OS, target.Arch); err != nil {
-			log.Debug("Failed to cache binary", "error", err)
+			log.Warn("Failed to cache binary", "error", err)
+		} else {
+			log.Debug("Binary cached successfully", "cache_key", cacheKey)
 		}
 	}
 
@@ -621,6 +707,7 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 	})
 	p.mu.Unlock()
 
+	log.Info("Build completed successfully", "build", build.ID, "target", target.String(), "output", outputPath)
 	return nil
 }
 
@@ -673,7 +760,7 @@ func (p *Pipeline) copyPrebuilt(ctx context.Context, build config.Build, target 
 }
 
 // archive creates archives from built artifacts
-func (p *Pipeline) archive(ctx context.Context) error {
+func (p *Pipeline) archive(_ context.Context) error {
 	log.Info("Creating archives")
 
 	if len(p.config.Archives) == 0 {
@@ -799,7 +886,7 @@ func (p *Pipeline) platformPackages(ctx context.Context) error {
 }
 
 // checksum creates checksums
-func (p *Pipeline) checksum(ctx context.Context) error {
+func (p *Pipeline) checksum(_ context.Context) error {
 	log.Info("Creating checksums")
 
 	generator := checksum.NewGenerator(p.config.Checksum, p.distDir, p.artifacts)
@@ -1194,11 +1281,12 @@ func (p *Pipeline) ensureBuildDependencies() error {
 	if needsSigning {
 		// Check which signing method is configured
 		for _, signCfg := range p.config.Signs {
-			if signCfg.Cmd == "cosign" {
+			switch signCfg.Cmd {
+			case "cosign":
 				if err := deps.CheckAndInstall("cosign"); err != nil {
 					log.Warn("Cosign not available", "error", err)
 				}
-			} else if signCfg.Cmd == "gpg" || signCfg.Cmd == "" {
+			case "gpg", "":
 				if err := deps.CheckAndInstall("gpg"); err != nil {
 					log.Warn("GPG not available", "error", err)
 				}

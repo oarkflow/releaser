@@ -62,61 +62,98 @@ func (b *GoBuilder) Supports(builder string) bool {
 
 // Build builds a Go binary
 func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context) error {
-	log.Debug("Building Go binary", "target", target.String(), "output", output)
+	log.Info("Starting Go build", "target", target.String(), "output", output)
+
+	// Log build configuration details
+	log.Debug("Go build configuration",
+		"main_package", build.Main,
+		"binary_name", build.Binary,
+		"go_binary", build.GoBinary,
+		"goos", target.OS,
+		"goarch", target.Arch,
+		"cgo_enabled", build.Cgo.Enabled,
+		"ldflags_count", len(build.Ldflags),
+		"tags_count", len(build.Tags),
+		"flags_count", len(build.Flags))
 
 	// Determine Go binary
 	goBinary := build.GoBinary
 	if goBinary == "" {
 		goBinary = "go"
+		log.Debug("Using default Go binary", "path", goBinary)
+	} else {
+		log.Debug("Using custom Go binary", "path", goBinary)
 	}
 
 	// Prepare environment
 	env := os.Environ()
+	log.Debug("Setting GOOS environment variable", "value", target.OS)
 	env = append(env, fmt.Sprintf("GOOS=%s", target.OS))
+
+	log.Debug("Setting GOARCH environment variable", "value", target.Arch)
 	env = append(env, fmt.Sprintf("GOARCH=%s", target.Arch))
+
 	if target.Arm != "" {
+		log.Debug("Setting GOARM environment variable", "value", target.Arm)
 		env = append(env, fmt.Sprintf("GOARM=%s", target.Arm))
 	}
 	if target.Amd64 != "" {
+		log.Debug("Setting GOAMD64 environment variable", "value", target.Amd64)
 		env = append(env, fmt.Sprintf("GOAMD64=%s", target.Amd64))
 	}
 	if target.Mips != "" {
+		log.Debug("Setting GOMIPS environment variable", "value", target.Mips)
 		env = append(env, fmt.Sprintf("GOMIPS=%s", target.Mips))
 	}
 
 	// Handle CGO configuration
 	if build.Cgo.Enabled {
+		log.Info("CGO enabled for this build")
 		env = append(env, "CGO_ENABLED=1")
 
 		// Get cross-compiler for this target
 		targetKey := target.OS + "_" + target.Arch
+		log.Debug("Getting cross-compiler for target", "target", targetKey)
 		cc, cxx, err := b.getCrossCompiler(build.Cgo, targetKey, target.OS, target.Arch)
 		if err != nil {
+			log.Warn("CGO cross-compilation not available", "target", targetKey, "error", err)
 			return fmt.Errorf("CGO cross-compilation not available for %s: %w", targetKey, err)
 		}
 
 		if cc != "" {
+			log.Debug("Setting CC environment variable", "value", cc)
 			env = append(env, fmt.Sprintf("CC=%s", cc))
 		}
 		if cxx != "" {
+			log.Debug("Setting CXX environment variable", "value", cxx)
 			env = append(env, fmt.Sprintf("CXX=%s", cxx))
 		}
 
 		// Add CGO flags
 		if len(build.Cgo.CFlags) > 0 {
-			env = append(env, fmt.Sprintf("CGO_CFLAGS=%s", strings.Join(build.Cgo.CFlags, " ")))
+			cgoFlags := strings.Join(build.Cgo.CFlags, " ")
+			log.Debug("Setting CGO_CFLAGS", "flags", cgoFlags)
+			env = append(env, fmt.Sprintf("CGO_CFLAGS=%s", cgoFlags))
 		}
 		if len(build.Cgo.CXXFlags) > 0 {
-			env = append(env, fmt.Sprintf("CGO_CXXFLAGS=%s", strings.Join(build.Cgo.CXXFlags, " ")))
+			cgoXXFlags := strings.Join(build.Cgo.CXXFlags, " ")
+			log.Debug("Setting CGO_CXXFLAGS", "flags", cgoXXFlags)
+			env = append(env, fmt.Sprintf("CGO_CXXFLAGS=%s", cgoXXFlags))
 		}
 		if len(build.Cgo.LDFlags) > 0 {
-			env = append(env, fmt.Sprintf("CGO_LDFLAGS=%s", strings.Join(build.Cgo.LDFlags, " ")))
+			cgoLDFlags := strings.Join(build.Cgo.LDFlags, " ")
+			log.Debug("Setting CGO_LDFLAGS", "flags", cgoLDFlags)
+			env = append(env, fmt.Sprintf("CGO_LDFLAGS=%s", cgoLDFlags))
 		}
 
 		// Handle pkg-config
 		if len(build.Cgo.PKGConfig) > 0 {
-			env = append(env, fmt.Sprintf("PKG_CONFIG_PATH=%s", strings.Join(build.Cgo.PKGConfig, ":")))
+			pkgConfigPath := strings.Join(build.Cgo.PKGConfig, ":")
+			log.Debug("Setting PKG_CONFIG_PATH", "path", pkgConfigPath)
+			env = append(env, fmt.Sprintf("PKG_CONFIG_PATH=%s", pkgConfigPath))
 		}
+	} else {
+		log.Debug("CGO disabled for this build")
 	}
 
 	// Add build-specific environment
@@ -271,13 +308,39 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 			if subcommand == "" {
 				subcommand = "build"
 			}
-			cmdArgs = append(cmdArgs, subcommand)
+			// Garble doesn't use a subcommand like 'build'
+			if cmdName != "garble" {
+				cmdArgs = append(cmdArgs, subcommand)
+			}
 		}
 		cmdArgs = append(cmdArgs, args...)
 	}
 
+	// Ensure obfuscation tool is available
+	if build.Obfuscation.Enabled && cmdName == "garble" {
+		if _, err := exec.LookPath("garble"); err != nil {
+			log.Info("Garble not found, installing...")
+			installCmd := exec.CommandContext(ctx, goBinary, "install", "mvdan.cc/garble@latest")
+			installCmd.Dir = dir
+			installCmd.Env = env
+			if err := installCmd.Run(); err != nil {
+				return fmt.Errorf("failed to install garble: %w", err)
+			}
+			log.Info("Garble installed successfully")
+		}
+	}
+
 	// Run build
-	log.Debug("Running Go compiler", "cmd", cmdName, "args", cmdArgs)
+	log.Info("Executing Go build command",
+		"command", cmdName,
+		"working_dir", dir,
+		"args_count", len(cmdArgs))
+
+	log.Debug("Full command details",
+		"command", cmdName,
+		"args", cmdArgs,
+		"working_directory", dir)
+
 	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
 	cmd.Dir = dir
 	cmd.Env = env
@@ -286,18 +349,33 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	log.Debug("Build command started")
 	if err := cmd.Run(); err != nil {
+		log.Error("Go build command failed",
+			"error", err,
+			"stderr", stderr.String())
 		return fmt.Errorf("go build failed: %w\n%s", err, stderr.String())
 	}
 
+	log.Debug("Build command completed successfully",
+		"stdout_size", len(stdout.Bytes()),
+		"stderr_size", len(stderr.Bytes()))
+
 	// Run post-build hooks
 	if build.Hooks.Post != "" {
+		log.Debug("Running post-build hook")
 		if err := runHookCmd(ctx, build.Hooks.Post, dir, env, tmplCtx); err != nil {
+			log.Error("Post-build hook failed", "error", err)
 			return fmt.Errorf("post-build hook failed: %w", err)
 		}
+		log.Debug("Post-build hook completed successfully")
+	} else {
+		log.Debug("No post-build hook configured")
 	}
 
-	log.Info("Built binary", "output", output)
+	log.Info("Go build completed successfully",
+		"output", output,
+		"target", target.String())
 	return nil
 }
 
@@ -608,9 +686,10 @@ func (b *NodeBuilder) Build(ctx context.Context, build config.Build, target Targ
 
 	// Determine package manager
 	pm := "npm"
-	if build.Builder == "yarn" {
+	switch build.Builder {
+	case "yarn":
 		pm = "yarn"
-	} else if build.Builder == "pnpm" {
+	case "pnpm":
 		pm = "pnpm"
 	}
 
@@ -706,7 +785,8 @@ func (b *PythonBuilder) Build(ctx context.Context, build config.Build, target Ta
 	}
 
 	// Determine build tool
-	if build.Builder == "poetry" {
+	switch build.Builder {
+	case "poetry":
 		// Poetry build
 		args := []string{"build"}
 		for _, flag := range build.Flags {
@@ -723,7 +803,7 @@ func (b *PythonBuilder) Build(ctx context.Context, build config.Build, target Ta
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("poetry build failed: %w", err)
 		}
-	} else if build.Builder == "pyinstaller" {
+	case "pyinstaller":
 		// PyInstaller build
 		args := []string{"--onefile", "--distpath", filepath.Dir(output)}
 		if target.OS == "windows" {
@@ -752,7 +832,7 @@ func (b *PythonBuilder) Build(ctx context.Context, build config.Build, target Ta
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("pyinstaller build failed: %w", err)
 		}
-	} else {
+	default:
 		// Standard Python build
 		args := []string{"setup.py", "build"}
 		for _, flag := range build.Flags {

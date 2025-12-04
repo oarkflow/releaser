@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
@@ -61,7 +62,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default is .releaser.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug output")
-	rootCmd.PersistentFlags().IntVarP(&parallelism, "parallelism", "p", 4, "number of parallel tasks")
+	rootCmd.PersistentFlags().IntVarP(&parallelism, "parallelism", "p", runtime.NumCPU(), "number of parallel tasks")
 	rootCmd.PersistentFlags().StringVar(&timeout, "timeout", "60m", "timeout for the entire release")
 	rootCmd.PersistentFlags().BoolVar(&autoInstall, "auto-install", false, "automatically install missing dependencies without prompting")
 	rootCmd.PersistentFlags().BoolVar(&skipInstall, "skip-install", false, "skip dependency installation prompts")
