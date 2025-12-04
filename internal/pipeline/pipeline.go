@@ -219,6 +219,10 @@ func (p *Pipeline) BuildAll(ctx context.Context) error {
 		if err := p.docker(ctx); err != nil {
 			return err
 		}
+
+		if err := p.dockerExports(); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -838,6 +842,45 @@ func (p *Pipeline) docker(ctx context.Context) error {
 
 	dockerBuilder := docker.NewMultiBuilder(p.config.Dockers, p.templateCtx, p.artifacts, p.distDir)
 	return dockerBuilder.BuildAll(ctx)
+}
+
+// dockerExports exports built Docker images into tar/tar.gz artifacts.
+func (p *Pipeline) dockerExports() error {
+	if len(p.config.DockerExports) == 0 {
+		return nil
+	}
+
+	log.Info("Exporting Docker images")
+
+	exports := make([]config.DockerExportConfig, 0, len(p.config.DockerExports))
+	for _, exp := range p.config.DockerExports {
+		image, err := p.templateCtx.Apply(exp.Image)
+		if err != nil {
+			return fmt.Errorf("failed to template docker export image for %s: %w", exp.ID, err)
+		}
+
+		output, err := p.templateCtx.Apply(exp.Output)
+		if err != nil {
+			return fmt.Errorf("failed to template docker export output for %s: %w", exp.ID, err)
+		}
+
+		format := exp.Format
+		if format != "" {
+			format, err = p.templateCtx.Apply(format)
+			if err != nil {
+				return fmt.Errorf("failed to template docker export format for %s: %w", exp.ID, err)
+			}
+		}
+
+		exports = append(exports, config.DockerExportConfig{
+			ID:     exp.ID,
+			Image:  image,
+			Format: format,
+			Output: output,
+		})
+	}
+
+	return docker.ExportAll(exports)
 }
 
 // publishRelease publishes to release platforms

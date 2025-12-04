@@ -232,6 +232,52 @@ dockers:
       - linux/arm64
 ```
 
+### Docker Image Export
+Export Docker images as tar artifacts for offline distribution or air-gapped environments.
+
+```yaml
+dockers:
+  - id: myapp
+    dockerfile: Dockerfile
+    image_templates:
+      - "myorg/myapp:{{ .Version }}"
+    export:
+      enabled: true
+      format: tar          # tar, tar.gz, oci
+      output: "dist/docker/{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.tar"
+    # Export multiple platforms as separate tar files
+    buildx: true
+    buildx_platforms:
+      - linux/amd64
+      - linux/arm64
+
+docker_exports:
+  - id: myapp-export
+    image: "myorg/myapp:{{ .Version }}"
+    format: tar.gz
+    output: "dist/{{ .ProjectName }}-docker-{{ .Version }}.tar.gz"
+  - id: myapp-oci
+    image: "myorg/myapp:{{ .Version }}"
+    format: oci
+    output: "dist/{{ .ProjectName }}-oci-{{ .Version }}"
+```
+
+#### Export Formats
+- **tar**: Standard Docker image archive (`docker save`)
+- **tar.gz**: Compressed Docker image archive
+- **oci**: OCI image layout directory
+
+#### Example: Export All Platform Images
+```yaml
+docker_exports:
+  - id: all-platforms
+    images:
+      - "myorg/myapp:{{ .Version }}-amd64"
+      - "myorg/myapp:{{ .Version }}-arm64"
+    format: tar.gz
+    output: "dist/{{ .ProjectName }}-{{ .Version }}-all.tar.gz"
+```
+
 ### macOS App Bundle
 ```yaml
 app_bundles:

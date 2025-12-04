@@ -1,0 +1,52 @@
+# Minimal GoFiber API - Releaser Configuration
+# A simple example with Docker artifact generation
+
+version: 2
+
+project_name: gofiber-api
+
+builds:
+  - id: api-server
+    main: ./cmd/server
+    binary: gofiber-api
+    lang: go
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+dockers:
+  - id: api-docker
+    ids:
+      - api-server
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    image_templates:
+      - "myorg/gofiber-api:{{ .Version }}"
+      - "myorg/gofiber-api:latest"
+
+# Export Docker images as tar artifacts
+docker_exports:
+  - id: docker-tar
+    image: "myorg/gofiber-api:{{ .Version }}"
+    format: tar.gz
+    output: "dist/gofiber-api_{{ .Version }}_docker.tar.gz"
+
+  - id: docker-tar-raw
+    image: "myorg/gofiber-api:{{ .Version }}"
+    format: tar
+    output: "dist/gofiber-api_{{ .Version }}_docker.tar"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: myorg
+    name: gofiber-api

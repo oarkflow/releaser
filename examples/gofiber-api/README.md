@@ -1,6 +1,67 @@
 # GoFiber API Example
 
-A sample REST API built with [GoFiber](https://gofiber.io/) framework, demonstrating how to use Releaser for building and packaging Go web applications.
+## Running Releaser Commands
+
+### Build Only
+```bash
+# From project root
+cd examples/gofiber-api
+
+# Build all targets
+releaser build --config .releaser.yaml
+
+# Build snapshot (no git tag required)
+releaser build --config .releaser.yaml --snapshot
+
+# Build single target
+releaser build --config .releaser.yaml --single-target amd64
+```
+
+### Full Release
+```bash
+# Create a git tag first
+git tag v1.0.0
+
+# Run full release pipeline
+releaser release --config .releaser.yaml
+
+# Snapshot release (no publishing)
+releaser release --config .releaser.yaml --snapshot
+
+# Skip publishing
+releaser release --config .releaser.yaml --skip-publish
+```
+
+### Using Minimal Config
+```bash
+# Use the minimal configuration
+releaser build --config releaser.minimal.yaml
+releaser release --config releaser.minimal.yaml
+```
+
+### Docker Export
+```bash
+# Builds now automatically export Docker images as tar artifacts
+releaser build --config .releaser.yaml
+
+# Images will be exported to:
+# - dist/gofiber-api_<version>_docker.tar.gz
+# - dist/gofiber-api_<version>_docker.tar
+```
+
+## Environment Variables
+
+Set these before running:
+```bash
+export GITHUB_OWNER=your-username
+export GITHUB_REPO=gofiber-api
+export GITHUB_TOKEN=your-token
+```
+
+Or run with inline variables:
+```bash
+GITHUB_OWNER=myusername GITHUB_REPO=gofiber-api releaser build --config .releaser.yaml --snapshot
+```
 
 ## Features
 

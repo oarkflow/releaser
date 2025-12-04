@@ -209,6 +209,9 @@ type Config struct {
 
 	// Docker Compose configuration
 	DockerComposes []DockerCompose `yaml:"docker_composes,omitempty"`
+
+	// Docker exports configuration
+	DockerExports []DockerExportConfig `yaml:"docker_exports,omitempty"`
 }
 
 // Defaults contains global default values
@@ -615,6 +618,14 @@ type ArchiveFileInfo struct {
 type ArchiveHooks struct {
 	Before []Hook `yaml:"before,omitempty"`
 	After  []Hook `yaml:"after,omitempty"`
+}
+
+// DockerExportConfig represents a Docker export configuration
+type DockerExportConfig struct {
+	ID     string `yaml:"id"`
+	Image  string `yaml:"image"`
+	Format string `yaml:"format"`
+	Output string `yaml:"output"`
 }
 
 // Load loads configuration from a file
