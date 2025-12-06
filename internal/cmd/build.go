@@ -32,6 +32,7 @@ This command builds binaries, creates archives, generates packages
 			Clean:        clean,
 			Parallelism:  parallelism,
 			Timeout:      timeout,
+			Silent:       silent,
 		}
 
 		p, err := pipeline.New(ctx, opts)
@@ -53,4 +54,5 @@ func init() {
 	buildCmd.Flags().BoolVar(&clean, "clean", false, "remove dist folder before building")
 	buildCmd.Flags().BoolVar(&skipDocker, "skip-docker", false, "skip building Docker images")
 	buildCmd.Flags().BoolVar(&skipSign, "skip-sign", false, "skip signing artifacts")
+	buildCmd.Flags().BoolVar(&silent, "silent", false, "show minimal output and continue on build errors")
 }

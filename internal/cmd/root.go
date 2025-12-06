@@ -30,6 +30,7 @@ var (
 	singleTarget string
 	autoInstall  bool
 	skipInstall  bool
+	silent       bool
 )
 
 // rootCmd represents the base command when called without any subcommands

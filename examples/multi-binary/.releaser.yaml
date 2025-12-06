@@ -84,9 +84,21 @@ builds:
       # Cross-compilers for different platforms
       # Zig is recommended as a universal cross-compiler
       cross_compilers:
+        linux_arm64:
+          cc: zig cc -target aarch64-linux-gnu
+          cxx: zig cxx -target aarch64-linux-gnu
         windows_amd64:
           cc: zig cc -target x86_64-windows-gnu
-          cxx: zig c++ -target x86_64-windows-gnu
+          cxx: zig cxx -target x86_64-windows-gnu
+        windows_arm64:
+          cc: zig cc -target aarch64-windows-gnu
+          cxx: zig cxx -target aarch64-windows-gnu
+        darwin_amd64:
+          cc: zig cc -target x86_64-macos-gnu
+          cxx: zig cxx -target x86_64-macos-gnu
+        darwin_arm64:
+          cc: zig cc -target aarch64-macos-gnu
+          cxx: zig cxx -target aarch64-macos-gnu
     # GUI-specific metadata
     gui:
       name: "Secretr"
@@ -145,49 +157,49 @@ archives:
       - README*
 
 # Linux packages - includes both CLI and GUI
-nfpms:
-  - id: all-packages
-    package_name: secretr
-    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    vendor: Verishore LLC
-    maintainer: developer@verishore.com
-    description: |
-      Secretr - A multi-binary application
-      Includes:
-        - secretr: Command-line interface
-        - secretr-gui: Graphical user interface
-    license: MIT
-    formats:
-      - deb
-      - rpm
-      - apk
-    bindir: /usr/bin
-    # The GUI binary will automatically get a .desktop file generated
-    contents:
-      # Additional config files
-      - src: ./config.verishore.yaml
-        dst: /etc/secretr/config.yaml
-        type: config|noreplace
-    # Dependencies vary by package format:
-    # - deb: libgtk-3-0, libgl1
-    # - rpm: gtk3, mesa-libGL
-    # - apk: gtk+3.0, mesa-gl
-    overrides:
-      deb:
-        dependencies:
-          - libgtk-3-0
-          - libgl1
-      rpm:
-        dependencies:
-          - gtk3
-          - mesa-libGL
-      apk:
-        dependencies:
-          - gtk+3.0
-          - mesa-gl
-    scripts:
-      postinstall: scripts/postinstall.sh
-      preremove: scripts/preremove.sh
+# nfpms:
+#   - id: all-packages
+#     package_name: secretr
+#     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+#     vendor: Verishore LLC
+#     maintainer: developer@verishore.com
+#     description: |
+#       Secretr - A multi-binary application
+#       Includes:
+#         - secretr: Command-line interface
+#         - secretr-gui: Graphical user interface
+#     license: MIT
+#     formats:
+#       - deb
+#       - rpm
+#       - apk
+#     bindir: /usr/bin
+#     # The GUI binary will automatically get a .desktop file generated
+#     contents:
+#       # Additional config files
+#       - src: ./config.verishore.yaml
+#         dst: /etc/secretr/config.yaml
+#         type: config|noreplace
+#     # Dependencies vary by package format:
+#     # - deb: libgtk-3-0, libgl1
+#     # - rpm: gtk3, mesa-libGL
+#     # - apk: gtk+3.0, mesa-gl
+#     overrides:
+#       deb:
+#         dependencies:
+#           - libgtk-3-0
+#           - libgl1
+#       rpm:
+#         dependencies:
+#           - gtk3
+#           - mesa-libGL
+#       apk:
+#         dependencies:
+#           - gtk+3.0
+#           - mesa-gl
+#     scripts:
+#       postinstall: scripts/postinstall.sh
+#       preremove: scripts/preremove.sh
 
 # macOS App Bundle for GUI
 app_bundles:

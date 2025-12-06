@@ -48,6 +48,7 @@ type ReleaseOptions struct {
 	Clean        bool
 	Parallelism  int
 	Timeout      string
+	Silent       bool
 }
 
 // Pipeline orchestrates the release process
@@ -200,6 +201,9 @@ func (p *Pipeline) BuildAll(ctx context.Context) error {
 		allErrors = append(allErrors, err)
 	}
 
+	// Clean up temporary object files
+	_ = os.Remove("-" + ".o")
+
 	// Create archives
 	if err := p.archive(ctx); err != nil {
 		allErrors = append(allErrors, err)
@@ -331,9 +335,13 @@ func (p *Pipeline) Build(ctx context.Context) error {
 				defer func() { <-sem }()
 
 				if err := p.buildTarget(buildCtx, b, t); err != nil {
-					select {
-					case errCh <- fmt.Errorf("build %s for %s failed: %w", b.ID, t.String(), err):
-					case <-ctx.Done():
+					if p.options.Silent {
+						log.Error(fmt.Sprintf("Build failed for %s %s: %s", b.ID, t.String(), err.Error()))
+					} else {
+						select {
+						case errCh <- fmt.Errorf("build %s for %s failed: %w", b.ID, t.String(), err):
+						case <-ctx.Done():
+						}
 					}
 				}
 			}(build, target)
@@ -366,7 +374,11 @@ func (p *Pipeline) Build(ctx context.Context) error {
 collect_done:
 
 	if len(errs) > 0 {
-		return fmt.Errorf("build failed with %d errors: %v", len(errs), errs)
+		if p.options.Silent {
+			log.Warn("Some builds failed", "count", len(errs))
+		} else {
+			return fmt.Errorf("build failed with %d errors: %v", len(errs), errs)
+		}
 	}
 
 	log.Info("Build completed", "artifacts", p.artifacts.Count())
