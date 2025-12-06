@@ -6,12 +6,15 @@ package builder
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -282,66 +285,23 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 		}
 	}
 
-	cmdName := goBinary
-	cmdArgs := args
-
+	// Handle obfuscation if enabled
 	if build.Obfuscation.Enabled {
-		cmdName = build.Obfuscation.Tool
-		if cmdName == "" {
-			cmdName = "garble"
-		}
-
-		var toolFlags []string
-		for _, flag := range build.Obfuscation.Flags {
-			expanded, err := tmplCtx.Apply(flag)
-			if err != nil {
-				return fmt.Errorf("failed to expand obfuscation flag %s: %w", flag, err)
-			}
-			if strings.TrimSpace(expanded) != "" {
-				toolFlags = append(toolFlags, expanded)
-			}
-		}
-
-		cmdArgs = append([]string{}, toolFlags...)
-		if !build.Obfuscation.SkipSubcommand {
-			subcommand := build.Obfuscation.Subcommand
-			if subcommand == "" {
-				subcommand = "build"
-			}
-			// Garble doesn't use a subcommand like 'build'
-			if cmdName != "garble" {
-				cmdArgs = append(cmdArgs, subcommand)
-			}
-		}
-		cmdArgs = append(cmdArgs, args...)
-	}
-
-	// Ensure obfuscation tool is available
-	if build.Obfuscation.Enabled && cmdName == "garble" {
-		if _, err := exec.LookPath("garble"); err != nil {
-			log.Info("Garble not found, installing...")
-			installCmd := exec.CommandContext(ctx, goBinary, "install", "mvdan.cc/garble@latest")
-			installCmd.Dir = dir
-			installCmd.Env = env
-			if err := installCmd.Run(); err != nil {
-				return fmt.Errorf("failed to install garble: %w", err)
-			}
-			log.Info("Garble installed successfully")
-		}
+		return b.buildWithObfuscation(ctx, build, target, output, tmplCtx, env, dir, goBinary, args)
 	}
 
 	// Run build
 	log.Info("Executing Go build command",
-		"command", cmdName,
+		"command", goBinary,
 		"working_dir", dir,
-		"args_count", len(cmdArgs))
+		"args_count", len(args))
 
 	log.Debug("Full command details",
-		"command", cmdName,
-		"args", cmdArgs,
+		"command", goBinary,
+		"args", args,
 		"working_directory", dir)
 
-	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
+	cmd := exec.CommandContext(ctx, goBinary, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 
@@ -376,6 +336,353 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 	log.Info("Go build completed successfully",
 		"output", output,
 		"target", target.String())
+	return nil
+}
+
+// buildWithObfuscation performs obfuscated build using multiple strategies
+func (b *GoBuilder) buildWithObfuscation(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context, env []string, dir, goBinary string, args []string) error {
+	log.Info("Starting obfuscated build", "target", target.String(), "output", output)
+
+	// Generate build ID for this build
+	buildID := generateBuildID()
+
+	// Determine platform for cross-platform compatibility
+	platform := b.detectPlatform(target.OS)
+
+	// Try garble obfuscation first (most effective)
+	if err := b.tryGarbleObfuscation(ctx, build, target, output, tmplCtx, env, dir, goBinary, args, buildID, platform); err == nil {
+		log.Info("Garble obfuscation successful")
+		return b.postObfuscationProcessing(ctx, build, output, tmplCtx, env, dir)
+	} else {
+		log.Warn("Garble obfuscation failed, trying alternatives", "error", err)
+	}
+
+	// Try gobfuscate as alternative
+	if err := b.tryGobfuscateObfuscation(ctx, build, target, output, tmplCtx, env, dir, goBinary, args, buildID); err == nil {
+		log.Info("Gobfuscate obfuscation successful")
+		return b.postObfuscationProcessing(ctx, build, output, tmplCtx, env, dir)
+	} else {
+		log.Warn("Gobfuscate obfuscation failed, using comprehensive security build", "error", err)
+	}
+
+	// Fallback to comprehensive security build
+	if err := b.comprehensiveSecurityBuild(ctx, build, target, output, tmplCtx, env, dir, goBinary, args, buildID); err != nil {
+		return fmt.Errorf("all obfuscation methods failed: %w", err)
+	}
+
+	log.Info("Comprehensive security build successful")
+	return b.postObfuscationProcessing(ctx, build, output, tmplCtx, env, dir)
+}
+
+// detectPlatform determines the platform type for cross-platform compatibility
+func (b *GoBuilder) detectPlatform(goos string) string {
+	switch goos {
+	case "linux":
+		return "linux"
+	case "darwin":
+		return "macos"
+	case "windows":
+		return "windows"
+	default:
+		return "linux"
+	}
+}
+
+// generateBuildID creates a unique build identifier
+func generateBuildID() string {
+	timestamp := time.Now().Unix()
+	randomBytes := make([]byte, 4)
+	rand.Read(randomBytes)
+	randomHex := hex.EncodeToString(randomBytes)
+	return fmt.Sprintf("%d_%s", timestamp, randomHex)
+}
+
+// tryGarbleObfuscation attempts obfuscation using garble
+func (b *GoBuilder) tryGarbleObfuscation(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context, env []string, dir, goBinary string, args []string, buildID, platform string) error {
+	log.Info("Attempting garble obfuscation")
+
+	// Ensure garble is available
+	if _, err := exec.LookPath("garble"); err != nil {
+		log.Info("Garble not found, installing...")
+		installCmd := exec.CommandContext(ctx, goBinary, "install", "mvdan.cc/garble@latest")
+		installCmd.Dir = dir
+		installCmd.Env = env
+		if err := installCmd.Run(); err != nil {
+			return fmt.Errorf("failed to install garble: %w", err)
+		}
+		log.Info("Garble installed successfully")
+	}
+
+	// Update garble to latest version
+	log.Info("Updating garble to latest version...")
+	updateCmd := exec.CommandContext(ctx, goBinary, "install", "mvdan.cc/garble@latest")
+	updateCmd.Dir = dir
+	updateCmd.Env = env
+	updateCmd.Run() // Ignore errors, continue with available version
+
+	// Clear garble cache
+	os.RemoveAll(filepath.Join(os.Getenv("GOCACHE"), "garble"))
+
+	// Set environment for garble
+	garbleEnv := append(env, "CGO_ENABLED=0")
+	garbleEnv = append(garbleEnv, fmt.Sprintf("GOOS=%s", target.OS))
+	garbleEnv = append(garbleEnv, fmt.Sprintf("GOARCH=%s", target.Arch))
+
+	// Prepare garble flags
+	garbleFlags := []string{"-literals", "-tiny", "-seed=random"}
+
+	// Add custom flags
+	for _, flag := range build.Obfuscation.Flags {
+		expanded, err := tmplCtx.Apply(flag)
+		if err != nil {
+			return fmt.Errorf("failed to expand obfuscation flag %s: %w", flag, err)
+		}
+		if strings.TrimSpace(expanded) != "" {
+			garbleFlags = append(garbleFlags, expanded)
+		}
+	}
+
+	// Prepare build args with obfuscation
+	buildArgs := append(garbleFlags, args...)
+
+	// Execute garble build
+	cmd := exec.CommandContext(ctx, "garble", buildArgs...)
+	cmd.Dir = dir
+	cmd.Env = garbleEnv
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	log.Debug("Running garble build", "args", buildArgs)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("garble build failed: %w\n%s", err, stderr.String())
+	}
+
+	// Verify binary was created
+	if _, err := os.Stat(output); os.IsNotExist(err) {
+		return fmt.Errorf("garble build did not produce output binary")
+	}
+
+	return nil
+}
+
+// tryGobfuscateObfuscation attempts obfuscation using gobfuscate
+func (b *GoBuilder) tryGobfuscateObfuscation(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context, env []string, dir, goBinary string, args []string, buildID string) error {
+	log.Info("Attempting gobfuscate obfuscation")
+
+	// Check if gobfuscate is available
+	if _, err := exec.LookPath("gobfuscate"); err != nil {
+		log.Warn("Gobfuscate not available, skipping")
+		return fmt.Errorf("gobfuscate not found")
+	}
+
+	// Prepare environment
+	gobfuscateEnv := append(env, "CGO_ENABLED=0")
+	gobfuscateEnv = append(gobfuscateEnv, fmt.Sprintf("GOOS=%s", target.OS))
+	gobfuscateEnv = append(gobfuscateEnv, fmt.Sprintf("GOARCH=%s", target.Arch))
+
+	// Prepare gobfuscate flags
+	gobfuscateFlags := []string{
+		"-trimpath",
+		"-buildvcs=false",
+		"-buildmode=exe",
+		fmt.Sprintf("-ldflags=-s -w -extldflags=-static -X main.version=%s -buildid=", buildID),
+		"-gcflags=-dwarf=false -l=false",
+		"-asmflags=-trimpath",
+		"-o", output,
+	}
+
+	// Add main package
+	mainPkg := build.Main
+	if mainPkg == "" {
+		mainPkg = "."
+	}
+	gobfuscateFlags = append(gobfuscateFlags, mainPkg)
+
+	// Execute gobfuscate build
+	cmd := exec.CommandContext(ctx, "gobfuscate", gobfuscateFlags...)
+	cmd.Dir = dir
+	cmd.Env = gobfuscateEnv
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	log.Debug("Running gobfuscate build", "flags", gobfuscateFlags)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gobfuscate build failed: %w\n%s", err, stderr.String())
+	}
+
+	// Verify binary was created
+	if _, err := os.Stat(output); os.IsNotExist(err) {
+		return fmt.Errorf("gobfuscate build did not produce output binary")
+	}
+
+	return nil
+}
+
+// comprehensiveSecurityBuild performs a security-hardened build without obfuscation
+func (b *GoBuilder) comprehensiveSecurityBuild(ctx context.Context, build config.Build, target Target, output string, tmplCtx *tmpl.Context, env []string, dir, goBinary string, args []string, buildID string) error {
+	log.Info("Performing comprehensive security build")
+
+	// Prepare environment
+	buildEnv := append(env, "CGO_ENABLED=0")
+	buildEnv = append(buildEnv, fmt.Sprintf("GOOS=%s", target.OS))
+	buildEnv = append(buildEnv, fmt.Sprintf("GOARCH=%s", target.Arch))
+
+	// Enhanced security ldflags
+	ldflags := []string{
+		"-s", // Strip symbol table
+		"-w", // Strip DWARF debugging info
+		fmt.Sprintf("-X main.version=%s", buildID),
+		"-buildid=", // Remove build ID
+	}
+
+	// Add existing ldflags
+	for _, ldflag := range build.Ldflags {
+		expanded, err := tmplCtx.Apply(ldflag)
+		if err != nil {
+			return fmt.Errorf("failed to expand ldflag %s: %w", ldflag, err)
+		}
+		ldflags = append(ldflags, expanded)
+	}
+
+	// Enhanced security gcflags
+	gcflags := []string{
+		"-dwarf=false", // Disable DWARF generation
+		"-l=false",     // Disable optimizations that increase size
+		"-N=false",     // Disable optimizations
+	}
+
+	// Add existing gcflags
+	for _, gcflag := range build.Gcflags {
+		expanded, err := tmplCtx.Apply(gcflag)
+		if err != nil {
+			return fmt.Errorf("failed to expand gcflag %s: %w", gcflag, err)
+		}
+		gcflags = append(gcflags, expanded)
+	}
+
+	// Build flags
+	buildFlags := []string{
+		"-trimpath",       // Remove file system paths
+		"-buildvcs=false", // Don't embed VCS info
+		"-buildmode=exe",  // Executable mode
+	}
+
+	// Add existing flags
+	for _, flag := range build.Flags {
+		expanded, err := tmplCtx.Apply(flag)
+		if err != nil {
+			return fmt.Errorf("failed to expand flag %s: %w", flag, err)
+		}
+		buildFlags = append(buildFlags, expanded)
+	}
+
+	// Construct final args
+	finalArgs := append(buildFlags,
+		fmt.Sprintf("-ldflags=%s", strings.Join(ldflags, " ")),
+		fmt.Sprintf("-gcflags=%s", strings.Join(gcflags, " ")),
+		"-asmflags=-trimpath",
+		"-o", output,
+	)
+
+	// Add main package
+	mainPkg := build.Main
+	if mainPkg == "" {
+		mainPkg = "."
+	}
+	finalArgs = append(finalArgs, mainPkg)
+
+	// Execute build
+	cmd := exec.CommandContext(ctx, goBinary, finalArgs...)
+	cmd.Dir = dir
+	cmd.Env = buildEnv
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	log.Debug("Running comprehensive security build", "args", finalArgs)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("comprehensive security build failed: %w\n%s", err, stderr.String())
+	}
+
+	// Verify binary was created
+	if _, err := os.Stat(output); os.IsNotExist(err) {
+		return fmt.Errorf("comprehensive security build did not produce output binary")
+	}
+
+	return nil
+}
+
+// postObfuscationProcessing applies post-build hardening and utilities
+func (b *GoBuilder) postObfuscationProcessing(ctx context.Context, build config.Build, output string, tmplCtx *tmpl.Context, env []string, dir string) error {
+	log.Info("Applying post-obfuscation processing")
+
+	// Make binary read-only
+	if err := os.Chmod(output, 0555); err != nil {
+		log.Warn("Failed to make binary read-only", "error", err)
+	}
+
+	// Apply UPX compression if enabled
+	if build.Obfuscation.UPX != nil && build.Obfuscation.UPX.Enabled {
+		if err := b.applyUPXCompression(ctx, build.Obfuscation.UPX, output); err != nil {
+			log.Warn("UPX compression failed", "error", err)
+		} else {
+			log.Info("UPX compression applied successfully")
+		}
+	}
+
+	// Generate checksums if enabled
+	if build.Obfuscation.Checksum {
+		if err := b.generateChecksums(output); err != nil {
+			log.Warn("Checksum generation failed", "error", err)
+		} else {
+			log.Info("Checksums generated successfully")
+		}
+	}
+
+	return nil
+}
+
+// applyUPXCompression applies UPX compression to the binary
+func (b *GoBuilder) applyUPXCompression(ctx context.Context, upxConfig *config.UPXConfig, output string) error {
+	if _, err := exec.LookPath("upx"); err != nil {
+		return fmt.Errorf("UPX not found")
+	}
+
+	upxArgs := []string{"--best"}
+	if upxConfig.Method != "" {
+		upxArgs = append(upxArgs, upxConfig.Method)
+	} else {
+		upxArgs = append(upxArgs, "--lzma")
+	}
+	upxArgs = append(upxArgs, output)
+
+	cmd := exec.CommandContext(ctx, "upx", upxArgs...)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("UPX compression failed: %w", err)
+	}
+
+	return nil
+}
+
+// generateChecksums creates checksum files for the binary
+func (b *GoBuilder) generateChecksums(output string) error {
+	checksumFile := output + ".sha256"
+
+	cmd := exec.Command("sha256sum", output)
+	checksumOutput, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to generate SHA256 checksum: %w", err)
+	}
+
+	if err := os.WriteFile(checksumFile, checksumOutput, 0644); err != nil {
+		return fmt.Errorf("failed to write checksum file: %w", err)
+	}
+
 	return nil
 }
 

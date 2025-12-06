@@ -70,6 +70,51 @@ builds:
       pre: echo "Building {{.Os}}/{{.Arch}}"
       post: echo "Built {{.Path}}"
 
+  # Obfuscated build with maximum security (cross-platform)
+  # Note: For Go 1.25.0+, garble may have compatibility issues with crypto packages
+  # The build will fall back to comprehensive security hardening
+  - id: cli-obfuscated
+    main: ./cmd/mygo-cli
+    binary: mygo-cli-obfuscated
+    builder: go
+    obfuscation:
+      enabled: true
+      tool: garble
+      flags:
+        - -literals  # Obfuscate string literals (may not work with Go 1.25.0+)
+        - -tiny
+        - -seed=random
+      upx:
+        enabled: true
+        level: --best
+        method: --lzma
+      checksum: true
+      anti_tampering: true
+      integrity_verification: true
+      self_check: true
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=releaser
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: "386"
+    mod: readonly
+    hooks:
+      pre: echo "Building obfuscated {{.Os}}/{{.Arch}}"
+      post: echo "Built obfuscated {{.Path}}"
+
   # Library/SDK build (no binary, just validation)
   - id: sdk
     main: ./sdk

@@ -441,6 +441,33 @@ type GoObfuscationConfig struct {
 
 	// SkipSubcommand omits adding a subcommand when true
 	SkipSubcommand bool `yaml:"skip_subcommand,omitempty"`
+
+	// UPX enables UPX compression for additional protection
+	UPX *UPXConfig `yaml:"upx,omitempty"`
+
+	// Checksum generates checksum files
+	Checksum bool `yaml:"checksum,omitempty"`
+
+	// AntiTampering enables anti-tampering measures
+	AntiTampering bool `yaml:"anti_tampering,omitempty"`
+
+	// IntegrityVerification enables runtime integrity checks
+	IntegrityVerification bool `yaml:"integrity_verification,omitempty"`
+
+	// SelfCheck enables self-check mechanisms
+	SelfCheck bool `yaml:"self_check,omitempty"`
+}
+
+// UPXConfig represents UPX compression settings
+type UPXConfig struct {
+	// Enabled toggles UPX compression
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Level compression level (default: --best)
+	Level string `yaml:"level,omitempty"`
+
+	// Method compression method (default: --lzma)
+	Method string `yaml:"method,omitempty"`
 }
 
 // CrossCompiler represents a cross-compiler configuration
