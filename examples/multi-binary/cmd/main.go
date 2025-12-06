@@ -9,12 +9,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
-)
 
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	"github.com/example/myapp/pkg/buildinfo"
 )
 
 func main() {
@@ -27,9 +23,9 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Printf("myapp-cli version %s\n", version)
-		fmt.Printf("  Commit: %s\n", commit)
-		fmt.Printf("  Built:  %s\n", date)
+		fmt.Printf("myapp-cli version %s\n", buildinfo.Version)
+		fmt.Printf("  Commit: %s\n", buildinfo.Commit)
+		fmt.Printf("  Built:  %s\n", buildinfo.BuildTime)
 		fmt.Printf("  Go:     %s\n", runtime.Version())
 		fmt.Printf("  OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 		os.Exit(0)
@@ -108,7 +104,7 @@ func showInfo() {
 	fmt.Printf("║  Arch:      %-25s ║\n", runtime.GOARCH)
 	fmt.Printf("║  CPUs:      %-25d ║\n", runtime.NumCPU())
 	fmt.Printf("║  Go:        %-25s ║\n", runtime.Version())
-	fmt.Printf("║  Version:   %-25s ║\n", version)
+	fmt.Printf("║  Version:   %-25s ║\n", buildinfo.Version)
 	fmt.Println("╚═══════════════════════════════════════╝")
 }
 

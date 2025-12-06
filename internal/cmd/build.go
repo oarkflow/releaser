@@ -29,6 +29,7 @@ This command builds binaries, creates archives, generates packages
 			SkipAnnounce: true,
 			SkipDocker:   skipDocker,
 			SkipSign:     skipSign,
+			SkipCache:    true, // always rebuild for local build command
 			Clean:        clean,
 			Parallelism:  parallelism,
 			Timeout:      timeout,

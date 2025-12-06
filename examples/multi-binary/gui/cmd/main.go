@@ -17,21 +17,17 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-)
 
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	"github.com/example/myapp/pkg/buildinfo"
 )
 
 func main() {
 	// Check for version flag (CLI mode)
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" || arg == "-v" {
-			fmt.Printf("MyApp GUI version %s\n", version)
-			fmt.Printf("  Commit: %s\n", commit)
-			fmt.Printf("  Built:  %s\n", date)
+			fmt.Printf("MyApp GUI version %s\n", buildinfo.Version)
+			fmt.Printf("  Commit: %s\n", buildinfo.Commit)
+			fmt.Printf("  Built:  %s\n", buildinfo.BuildTime)
 			fmt.Printf("  Go:     %s\n", runtime.Version())
 			fmt.Printf("  OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 			os.Exit(0)
@@ -95,7 +91,7 @@ func runGUI() {
 
 	// System info
 	infoText := fmt.Sprintf("Platform: %s/%s | Go: %s | Version: %s",
-		runtime.GOOS, runtime.GOARCH, runtime.Version(), version)
+		runtime.GOOS, runtime.GOARCH, runtime.Version(), buildinfo.Version)
 	infoLabel := widget.NewLabel(infoText)
 	infoLabel.Alignment = fyne.TextAlignCenter
 
@@ -214,8 +210,8 @@ Platform: %s/%s
 Go: %s
 Commit: %s
 Built: %s`,
-		version, runtime.GOOS, runtime.GOARCH,
-		runtime.Version(), commit, date)
+		buildinfo.Version, runtime.GOOS, runtime.GOARCH,
+		runtime.Version(), buildinfo.Commit, buildinfo.BuildTime)
 
 	dialog.ShowInformation("About MyApp", aboutText, w)
 }

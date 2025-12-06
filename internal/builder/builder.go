@@ -50,6 +50,25 @@ func (t Target) String() string {
 	return s
 }
 
+// BuildLdFlags builds a "-ldflags" string from a map of key/value pairs.
+// Example: BuildLdFlags(map[string]string{"main.Version": "1.0.0"})
+func BuildLdFlags(vars map[string]string) string {
+	var parts []string
+
+	for key, value := range vars {
+		// Escape double quotes inside values
+		value = strings.ReplaceAll(value, `"`, `\"`)
+		parts = append(parts, fmt.Sprintf(`-X %s=%s`, key, value))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// BuildLdFlagsSlice returns []string to use directly in exec.Command
+func BuildLdFlagsSlice(vars map[string]string) []string {
+	return []string{"-ldflags", BuildLdFlags(vars)}
+}
+
 // GoBuilder builds Go binaries
 type GoBuilder struct{}
 
@@ -76,6 +95,7 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 		"goarch", target.Arch,
 		"cgo_enabled", build.Cgo.Enabled,
 		"ldflags_count", len(build.Ldflags),
+		"ldflags_map_count", len(build.LdflagsMap),
 		"tags_count", len(build.Tags),
 		"flags_count", len(build.Flags))
 
@@ -181,6 +201,21 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 
 	// Prepare ldflags
 	var ldflags []string
+
+	// Map form -> individual -X entries
+	for key, value := range build.LdflagsMap {
+		expandedKey, err := tmplCtx.Apply(key)
+		if err != nil {
+			return fmt.Errorf("failed to expand ldflag key %s: %w", key, err)
+		}
+		expandedValue, err := tmplCtx.Apply(value)
+		if err != nil {
+			return fmt.Errorf("failed to expand ldflag value %s: %w", value, err)
+		}
+		ldflags = append(ldflags, fmt.Sprintf("-X %s=%s", expandedKey, expandedValue))
+	}
+
+	// List form (e.g. -s -w)
 	for _, ldflag := range build.Ldflags {
 		expanded, err := tmplCtx.Apply(ldflag)
 		if err != nil {
@@ -222,8 +257,20 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 	}
 
 	// Add ldflags
-	if len(ldflags) > 0 {
-		args = append(args, "-ldflags="+strings.Join(ldflags, " "))
+	var otherLdflags []string
+	var xLdflags []string
+	for _, ldflag := range ldflags {
+		if strings.HasPrefix(ldflag, "-X ") {
+			xLdflags = append(xLdflags, ldflag)
+		} else {
+			otherLdflags = append(otherLdflags, ldflag)
+		}
+	}
+	allLdflags := append(xLdflags, otherLdflags...)
+	if len(allLdflags) > 0 {
+		// Use separate argument for -ldflags to avoid Go flag parsing issues
+		ldflagsArg := strings.Join(allLdflags, " ")
+		args = append(args, "-ldflags", ldflagsArg)
 	}
 
 	// Add tags
@@ -582,11 +629,15 @@ func (b *GoBuilder) comprehensiveSecurityBuild(ctx context.Context, build config
 
 	// Construct final args
 	finalArgs := append(buildFlags,
-		fmt.Sprintf("-ldflags=%s", strings.Join(ldflags, " ")),
 		fmt.Sprintf("-gcflags=%s", strings.Join(gcflags, " ")),
 		"-asmflags=-trimpath",
 		"-o", output,
 	)
+
+	// Add ldflags
+	for _, ldflag := range ldflags {
+		finalArgs = append(finalArgs, fmt.Sprintf("-ldflags=%s", ldflag))
+	}
 
 	// Add main package
 	mainPkg := build.Main

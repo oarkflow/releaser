@@ -321,6 +321,9 @@ type Build struct {
 	// Ldflags for Go builds
 	Ldflags []string `yaml:"ldflags,omitempty"`
 
+	// LdflagsMap for Go builds (key-value pairs for -X flags)
+	LdflagsMap map[string]string `yaml:"ldflags_map,omitempty"`
+
 	// Tags for Go builds
 	Tags []string `yaml:"tags,omitempty"`
 
@@ -700,6 +703,22 @@ func Load(path string) (*Config, error) {
 
 			if err := mergo.Merge(&cfg, includeCfg, mergo.WithAppendSlice); err != nil {
 				return nil, fmt.Errorf("failed to merge include %s: %w", match, err)
+			}
+		}
+	}
+
+	// Detect module path from go.mod
+	if data, err := os.ReadFile(filepath.Join(baseDir, "go.mod")); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "module ") {
+				modulePath := strings.TrimPrefix(line, "module ")
+				if cfg.Variables == nil {
+					cfg.Variables = make(map[string]interface{})
+				}
+				cfg.Variables["Module"] = modulePath
+				break
 			}
 		}
 	}

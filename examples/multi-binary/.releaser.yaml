@@ -47,8 +47,10 @@ builds:
         goarch: arm64
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.ShortCommit}}
+    ldflags_map:
+      "github.com/example/myapp/pkg/buildinfo.Version": "{{.Version}}"
+      "github.com/example/myapp/pkg/buildinfo.Commit": "{{.ShortCommit}}"
+      "github.com/example/myapp/pkg/buildinfo.BuildTime": "{{.Date}}"
     flags:
       - -trimpath
     env:
@@ -75,7 +77,10 @@ builds:
     # Cross-compiled GUI builds are complex - build natively for macOS targets
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
+    ldflags_map:
+      "github.com/example/myapp/pkg/buildinfo.Version": "{{.Version}}"
+      "github.com/example/myapp/pkg/buildinfo.Commit": "{{.ShortCommit}}"
+      "github.com/example/myapp/pkg/buildinfo.BuildTime": "{{.Date}}"
     flags:
       - -trimpath
     # Enable CGO for Fyne GUI
