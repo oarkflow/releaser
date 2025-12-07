@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
+	"crypto/hmac"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mrand "math/rand"
 	"mime"
 	"net"
 	"net/http"
@@ -24,61 +27,84 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // EmailConfig represents the fully normalized configuration.
 type EmailConfig struct {
-	From             string
-	FromName         string
-	EnvelopeFrom     string
-	ReplyTo          []string
-	To               []string
-	CC               []string
-	BCC              []string
-	Subject          string
-	Body             string
-	TextBody         string
-	HTMLBody         string
-	Attachments      []Attachment
-	Provider         string
-	Transport        string
-	Host             string
-	Port             int
-	Username         string
-	Password         string
-	APIKey           string
-	APIToken         string
-	Endpoint         string
-	HTTPMethod       string
-	Headers          map[string]string
-	QueryParams      map[string]string
-	HTTPPayload      map[string]interface{}
-	PayloadFormat    string
-	HTTPContentType  string
-	HTMLTemplatePath string
-	TextTemplatePath string
-	BodyTemplatePath string
-	AdditionalData   map[string]interface{}
-	UseTLS           bool
-	UseSSL           bool
-	SkipTLSVerify    bool
-	Timeout          time.Duration
-	RetryCount       int
-	RetryDelay       time.Duration
+	From                string
+	FromName            string
+	EnvelopeFrom        string
+	ReturnPath          string
+	ReplyTo             []string
+	To                  []string
+	CC                  []string
+	BCC                 []string
+	ListUnsubscribe     []string
+	ListUnsubscribePost bool
+	Subject             string
+	Body                string
+	TextBody            string
+	HTMLBody            string
+	Attachments         []Attachment
+	ConfigurationSet    string
+	Tags                map[string]string
+	Provider            string
+	Transport           string
+	Host                string
+	Port                int
+	Username            string
+	Password            string
+	APIKey              string
+	APIToken            string
+	Endpoint            string
+	HTTPMethod          string
+	Headers             map[string]string
+	QueryParams         map[string]string
+	HTTPPayload         map[string]any
+	PayloadFormat       string
+	HTTPContentType     string
+	HTTPAuth            string
+	HTTPAuthHeader      string
+	HTTPAuthQuery       string
+	HTTPAuthPrefix      string
+	MaxConnsPerHost     int
+	MaxIdleConns        int
+	MaxIdleConnsHost    int
+	DisableKeepAlives   bool
+	SMTPAuth            string
+	HTMLTemplatePath    string
+	TextTemplatePath    string
+	BodyTemplatePath    string
+	AdditionalData      map[string]any
+	AWSRegion           string
+	AWSAccessKey        string
+	AWSSecretKey        string
+	AWSSessionToken     string
+	UseTLS              bool
+	UseSSL              bool
+	SkipTLSVerify       bool
+	Timeout             time.Duration
+	RetryCount          int
+	RetryDelay          time.Duration
 }
 
 // Attachment describes a file to be included with the email.
 type Attachment struct {
-	Source   string
-	Name     string
-	MIMEType string
+	Source    string
+	Name      string
+	MIMEType  string
+	Inline    bool
+	ContentID string
 }
 
 type encodedAttachment struct {
-	Filename string
-	MIMEType string
-	Content  string
+	Filename  string
+	MIMEType  string
+	Content   string
+	Inline    bool
+	ContentID string
 }
 
 // ProviderSetting captures smart defaults for known providers.
@@ -91,7 +117,7 @@ type ProviderSetting struct {
 	Endpoint  string
 }
 
-type payloadBuilder func(*EmailConfig) (interface{}, string, error)
+type payloadBuilder func(*EmailConfig) (any, string, error)
 
 type httpProviderProfile struct {
 	Endpoint      string
@@ -122,6 +148,8 @@ var providerDefaults = map[string]ProviderSetting{
 	"sparkpost":    {Host: "smtp.sparkpostmail.com", Port: 587, UseTLS: true},
 	"amazon_ses":   {Host: "email-smtp.us-east-1.amazonaws.com", Port: 587, UseTLS: true},
 	"amazon":       {Host: "email-smtp.us-east-1.amazonaws.com", Port: 587, UseTLS: true},
+	"aws_ses":      {Transport: "http", Endpoint: "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails"},
+	"ses":          {Transport: "http", Endpoint: "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails"},
 	"fastmail":     {Host: "smtp.fastmail.com", Port: 465, UseSSL: true},
 	"protonmail":   {Transport: "http", Endpoint: "https://api.protonmail.ch"},
 	"sendinblue":   {Host: "smtp-relay.sendinblue.com", Port: 587, UseTLS: true},
@@ -136,6 +164,24 @@ var httpProviderProfiles = map[string]httpProviderProfile{
 		Method:        http.MethodPost,
 		ContentType:   "application/json",
 		PayloadFormat: "sendgrid",
+	},
+	"ses": {
+		Endpoint:      "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails",
+		Method:        http.MethodPost,
+		ContentType:   "application/json",
+		PayloadFormat: "sesv2",
+	},
+	"aws_ses": {
+		Endpoint:      "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails",
+		Method:        http.MethodPost,
+		ContentType:   "application/json",
+		PayloadFormat: "sesv2",
+	},
+	"amazon_ses": {
+		Endpoint:      "https://email.us-east-1.amazonaws.com/v2/email/outbound-emails",
+		Method:        http.MethodPost,
+		ContentType:   "application/json",
+		PayloadFormat: "sesv2",
 	},
 	"brevo": {
 		Endpoint:      "https://api.brevo.com/v3/smtp/email",
@@ -161,6 +207,30 @@ var httpProviderProfiles = map[string]httpProviderProfile{
 		ContentType:   "application/json",
 		PayloadFormat: "mailtrap",
 	},
+	"postmark": {
+		Endpoint:      "https://api.postmarkapp.com/email",
+		Method:        http.MethodPost,
+		ContentType:   "application/json",
+		PayloadFormat: "postmark",
+	},
+	"sparkpost": {
+		Endpoint:      "https://api.sparkpost.com/api/v1/transmissions",
+		Method:        http.MethodPost,
+		ContentType:   "application/json",
+		PayloadFormat: "sparkpost",
+	},
+	"resend": {
+		Endpoint:      "https://api.resend.com/emails",
+		Method:        http.MethodPost,
+		ContentType:   "application/json",
+		PayloadFormat: "resend",
+	},
+	"mailgun": {
+		Endpoint:      "https://api.mailgun.net/v3",
+		Method:        http.MethodPost,
+		ContentType:   "application/x-www-form-urlencoded",
+		PayloadFormat: "mailgun",
+	},
 }
 
 var httpPayloadBuilders = map[string]payloadBuilder{
@@ -168,7 +238,20 @@ var httpPayloadBuilders = map[string]payloadBuilder{
 	"brevo":      buildBrevoPayload,
 	"sendinblue": buildBrevoPayload,
 	"mailtrap":   buildMailtrapPayload,
+	"sesv2":      buildSESPayload,
+	"ses":        buildSESPayload,
+	"aws_ses":    buildSESPayload,
+	"amazon_ses": buildSESPayload,
+	"postmark":   buildPostmarkPayload,
+	"sparkpost":  buildSparkPostPayload,
+	"resend":     buildResendPayload,
+	"mailgun":    buildMailgunPayload,
 }
+
+var (
+	httpClientMu    sync.Mutex
+	httpClientCache = map[string]*http.Client{}
+)
 
 var emailDomainMap = map[string]string{
 	"gmail.com":      "gmail",
@@ -192,45 +275,65 @@ var emailDomainMap = map[string]string{
 }
 
 var fieldAliases = map[string][]string{
-	"from":              {"from", "sender", "from_email", "fromaddress", "sender_email", "mailfrom"},
-	"from_name":         {"from_name", "sender_name", "fromname", "display_name", "name"},
-	"reply_to":          {"reply_to", "replyto", "respond_to", "response_to"},
-	"to":                {"to", "recipient", "recipients", "send_to", "sending_to", "mail_to", "to_email", "sendto"},
-	"cc":                {"cc", "carbon_copy", "copy_to"},
-	"bcc":               {"bcc", "blind_carbon_copy", "blind_copy"},
-	"subject":           {"subject", "title", "email_subject"},
-	"body":              {"body", "message", "msg", "content", "email_content", "text"},
-	"body_html":         {"body_html", "html_body", "html", "message_html"},
-	"body_text":         {"body_text", "text_body", "plain_text", "message_text"},
-	"attachments":       {"attachments", "attachment", "files", "file", "attach"},
-	"provider":          {"provider", "use", "service", "email_service"},
-	"type":              {"type", "transport", "channel", "method"},
-	"host":              {"host", "server", "smtp_host", "address", "addr", "smtp_server"},
-	"port":              {"port", "smtp_port"},
-	"username":          {"username", "user", "email", "login", "auth_user"},
-	"password":          {"password", "pass", "pwd", "auth_password"},
-	"api_key":           {"api_key", "apikey", "key"},
-	"api_token":         {"api_token", "apitoken", "token", "access_token", "bearer", "bearer_token"},
-	"endpoint":          {"endpoint", "url", "api_url", "api_endpoint"},
-	"http_method":       {"http_method", "httpverb", "method"},
-	"headers":           {"headers", "custom_headers", "http_headers"},
-	"query_params":      {"query_params", "query", "params", "querystrings", "querystring"},
-	"http_payload":      {"http_payload", "payload", "http_body", "custom_payload"},
-	"payload_format":    {"payload_format", "http_profile", "http_format"},
-	"http_content_type": {"http_content_type", "payload_content_type", "http_payload_type"},
-	"html_template":     {"html_template", "template_html", "html_file", "html_path"},
-	"text_template":     {"text_template", "template_text", "text_file", "text_path"},
-	"body_template":     {"body_template", "message_template", "msg_template", "message_file", "template_message"},
-	"timeout":           {"timeout", "timeout_seconds", "request_timeout", "http_timeout"},
-	"retries":           {"retries", "retry", "retry_count", "attempts"},
-	"retry_delay":       {"retry_delay", "retry_wait", "retry_backoff", "retry_pause"},
-	"use_tls":           {"use_tls", "tls", "starttls", "enable_tls"},
-	"use_ssl":           {"use_ssl", "ssl", "enable_ssl"},
-	"skip_tls_verify":   {"skip_tls_verify", "insecure", "disable_tls_verify"},
+	"from":                    {"from", "sender", "from_email", "fromaddress", "sender_email", "mailfrom"},
+	"from_name":               {"from_name", "sender_name", "fromname", "display_name", "name"},
+	"return_path":             {"return_path", "bounce", "envelope_from", "returnpath"},
+	"envelope_from":           {"envelope_from", "mail_from", "mfrom"},
+	"reply_to":                {"reply_to", "replyto", "respond_to", "response_to"},
+	"to":                      {"to", "recipient", "recipients", "send_to", "sending_to", "mail_to", "to_email", "sendto"},
+	"cc":                      {"cc", "carbon_copy", "copy_to"},
+	"bcc":                     {"bcc", "blind_carbon_copy", "blind_copy"},
+	"list_unsubscribe":        {"list_unsubscribe", "unsubscribe", "listunsubscribe"},
+	"list_unsubscribe_post":   {"list_unsubscribe_post", "unsubscribe_post", "one_click"},
+	"subject":                 {"subject", "title", "email_subject"},
+	"body":                    {"body", "message", "msg", "content", "email_content", "text"},
+	"body_html":               {"body_html", "html_body", "html", "message_html"},
+	"body_text":               {"body_text", "text_body", "plain_text", "message_text"},
+	"attachments":             {"attachments", "attachment", "files", "file", "attach"},
+	"configuration_set":       {"configuration_set", "config_set", "ses_configuration_set"},
+	"tags":                    {"tags", "ses_tags", "metadata", "ses_metadata"},
+	"provider":                {"provider", "use", "service", "email_service"},
+	"type":                    {"type", "transport", "channel", "method"},
+	"host":                    {"host", "server", "smtp_host", "address", "addr", "smtp_server"},
+	"port":                    {"port", "smtp_port"},
+	"username":                {"username", "user", "email", "login", "auth_user"},
+	"password":                {"password", "pass", "pwd", "auth_password"},
+	"api_key":                 {"api_key", "apikey", "key"},
+	"api_token":               {"api_token", "apitoken", "token", "access_token", "bearer", "bearer_token"},
+	"endpoint":                {"endpoint", "url", "api_url", "api_endpoint"},
+	"http_method":             {"http_method", "httpverb", "method"},
+	"headers":                 {"headers", "custom_headers", "http_headers"},
+	"query_params":            {"query_params", "query", "params", "querystrings", "querystring"},
+	"http_payload":            {"http_payload", "payload", "http_body", "custom_payload"},
+	"payload_format":          {"payload_format", "http_profile", "http_format"},
+	"http_content_type":       {"http_content_type", "payload_content_type", "http_payload_type"},
+	"http_auth":               {"http_auth", "auth", "auth_type"},
+	"http_auth_header":        {"http_auth_header", "auth_header", "api_key_header"},
+	"http_auth_query":         {"http_auth_query", "auth_query", "api_key_query", "auth_param"},
+	"http_auth_prefix":        {"http_auth_prefix", "auth_prefix", "bearer_prefix"},
+	"max_conns_per_host":      {"max_conns_per_host", "max_connections", "max_conns"},
+	"max_idle_conns":          {"max_idle_conns", "idle_conns", "max_idle"},
+	"max_idle_conns_per_host": {"max_idle_conns_per_host", "max_idle_host", "idle_conns_host"},
+	"disable_keepalives":      {"disable_keepalives", "no_keepalive", "disable_keep_alive"},
+	"smtp_auth":               {"smtp_auth", "smtp_auth_type", "smtp_auth_mechanism"},
+	"html_template":           {"html_template", "template_html", "html_file", "html_path"},
+	"text_template":           {"text_template", "template_text", "text_file", "text_path"},
+	"body_template":           {"body_template", "message_template", "msg_template", "message_file", "template_message"},
+	"timeout":                 {"timeout", "timeout_seconds", "request_timeout", "http_timeout"},
+	"retries":                 {"retries", "retry", "retry_count", "attempts"},
+	"retry_delay":             {"retry_delay", "retry_wait", "retry_backoff", "retry_pause"},
+	"use_tls":                 {"use_tls", "tls", "starttls", "enable_tls"},
+	"use_ssl":                 {"use_ssl", "ssl", "enable_ssl"},
+	"skip_tls_verify":         {"skip_tls_verify", "insecure", "disable_tls_verify"},
+	"aws_region":              {"aws_region", "region"},
+	"aws_access_key":          {"aws_access_key", "access_key", "aws_access_key_id"},
+	"aws_secret_key":          {"aws_secret_key", "secret_key", "aws_secret_access_key"},
+	"aws_session_token":       {"aws_session_token", "session_token", "aws_token"},
 }
 
 func init() {
 	log.SetFlags(0)
+	mrand.Seed(time.Now().UnixNano())
 	for canonical, aliases := range fieldAliases {
 		seen := make(map[string]struct{})
 		normalized := make([]string, 0, len(aliases)+1)
@@ -311,7 +414,7 @@ func main() {
 	log.Println("Email sent successfully!")
 }
 
-func loadConfigFiles(templateFlag, payloadFlag string, args []string) (map[string]interface{}, error) {
+func loadConfigFiles(templateFlag, payloadFlag string, args []string) (map[string]any, error) {
 	templatePath := templateFlag
 	remaining := args
 	if templatePath == "" {
@@ -351,7 +454,7 @@ func printUsage() {
 	fmt.Println("\nExamples:\n  go run main.go config.json\n  go run main.go --template template.smtp.json --payload payload.release.json")
 }
 
-func parseConfig(raw map[string]interface{}) (*EmailConfig, error) {
+func parseConfig(raw map[string]any) (*EmailConfig, error) {
 	norm := newNormalizedConfig(raw)
 	cfg := &EmailConfig{
 		Headers:     map[string]string{},
@@ -360,10 +463,16 @@ func parseConfig(raw map[string]interface{}) (*EmailConfig, error) {
 
 	cfg.From = getStringField(norm, "from")
 	cfg.FromName = getStringField(norm, "from_name")
+	cfg.ReturnPath = getStringField(norm, "return_path")
+	if env := getStringField(norm, "envelope_from"); env != "" {
+		cfg.EnvelopeFrom = env
+	}
 	cfg.ReplyTo = getStringArrayField(norm, "reply_to")
 	cfg.To = getStringArrayField(norm, "to")
 	cfg.CC = getStringArrayField(norm, "cc")
 	cfg.BCC = getStringArrayField(norm, "bcc")
+	cfg.ListUnsubscribe = getStringArrayField(norm, "list_unsubscribe")
+	cfg.ListUnsubscribePost = getBoolField(norm, "list_unsubscribe_post")
 	cfg.Subject = getStringField(norm, "subject")
 	cfg.Body = getStringField(norm, "body")
 	cfg.TextBody = getStringField(norm, "body_text")
@@ -371,6 +480,8 @@ func parseConfig(raw map[string]interface{}) (*EmailConfig, error) {
 	cfg.HTMLTemplatePath = getStringField(norm, "html_template")
 	cfg.TextTemplatePath = getStringField(norm, "text_template")
 	cfg.BodyTemplatePath = getStringField(norm, "body_template")
+	cfg.ConfigurationSet = getStringField(norm, "configuration_set")
+	cfg.Tags = getStringMapField(norm, "tags")
 
 	attachments, err := getAttachments(norm, "attachments")
 	if err != nil {
@@ -396,6 +507,19 @@ func parseConfig(raw map[string]interface{}) (*EmailConfig, error) {
 	cfg.HTTPPayload = getObjectField(norm, "http_payload")
 	cfg.PayloadFormat = strings.ToLower(getStringField(norm, "payload_format"))
 	cfg.HTTPContentType = getStringField(norm, "http_content_type")
+	cfg.HTTPAuth = strings.ToLower(getStringField(norm, "http_auth"))
+	cfg.HTTPAuthHeader = getStringField(norm, "http_auth_header")
+	cfg.HTTPAuthQuery = getStringField(norm, "http_auth_query")
+	cfg.HTTPAuthPrefix = getStringField(norm, "http_auth_prefix")
+	cfg.MaxConnsPerHost = getIntField(norm, "max_conns_per_host")
+	cfg.MaxIdleConns = getIntField(norm, "max_idle_conns")
+	cfg.MaxIdleConnsHost = getIntField(norm, "max_idle_conns_per_host")
+	cfg.DisableKeepAlives = getBoolField(norm, "disable_keepalives")
+	cfg.SMTPAuth = strings.ToLower(getStringField(norm, "smtp_auth"))
+	cfg.AWSRegion = getStringField(norm, "aws_region")
+	cfg.AWSAccessKey = getStringField(norm, "aws_access_key")
+	cfg.AWSSecretKey = getStringField(norm, "aws_secret_key")
+	cfg.AWSSessionToken = getStringField(norm, "aws_session_token")
 	cfg.Timeout = getDurationField(norm, "timeout")
 	cfg.RetryCount = getIntField(norm, "retries")
 	cfg.RetryDelay = getDurationField(norm, "retry_delay")
@@ -404,7 +528,7 @@ func parseConfig(raw map[string]interface{}) (*EmailConfig, error) {
 	cfg.SkipTLSVerify = getBoolField(norm, "skip_tls_verify")
 	cfg.AdditionalData = norm.leftovers()
 	if cfg.AdditionalData == nil {
-		cfg.AdditionalData = map[string]interface{}{}
+		cfg.AdditionalData = map[string]any{}
 	}
 
 	if err := applyPlaceholders(cfg, placeholderModeInitial); err != nil {
@@ -427,21 +551,21 @@ func parseConfig(raw map[string]interface{}) (*EmailConfig, error) {
 	return cfg, nil
 }
 
-func readJSONFile(path string) (map[string]interface{}, error) {
+func readJSONFile(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func mergeConfigMaps(base, override map[string]interface{}) map[string]interface{} {
+func mergeConfigMaps(base, override map[string]any) map[string]any {
 	if base == nil {
-		base = map[string]interface{}{}
+		base = map[string]any{}
 	}
 	for key, value := range override {
 		if existing, ok := base[key]; ok {
@@ -457,12 +581,12 @@ func mergeConfigMaps(base, override map[string]interface{}) map[string]interface
 	return base
 }
 
-func asMap(value interface{}) (map[string]interface{}, bool) {
+func asMap(value any) (map[string]any, bool) {
 	switch v := value.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		return v, true
 	case map[string]string:
-		result := make(map[string]interface{}, len(v))
+		result := make(map[string]any, len(v))
 		for key, val := range v {
 			result[key] = val
 		}
@@ -476,6 +600,12 @@ func finalizeConfig(cfg *EmailConfig) error {
 	cfg.Provider = strings.ToLower(cfg.Provider)
 	if cfg.Provider == "" {
 		cfg.Provider = inferProvider(cfg.From, cfg.Username)
+	}
+	if cfg.Tags == nil {
+		cfg.Tags = map[string]string{}
+	}
+	if cfg.HTTPAuthPrefix == "" {
+		cfg.HTTPAuthPrefix = "Bearer"
 	}
 	applyProviderDefaults(cfg)
 	applyHTTPProfile(cfg)
@@ -513,9 +643,17 @@ func finalizeConfig(cfg *EmailConfig) error {
 		return errors.New("sender address is required")
 	}
 	cfg.From = addr
-	cfg.EnvelopeFrom = addr
+	if cfg.EnvelopeFrom == "" {
+		cfg.EnvelopeFrom = addr
+	}
+	if cfg.ReturnPath != "" {
+		cfg.EnvelopeFrom = cfg.ReturnPath
+	}
 	if cfg.Username == "" {
 		cfg.Username = addr
+	}
+	if cfg.AWSRegion == "" {
+		cfg.AWSRegion = inferAWSRegion(cfg.Endpoint)
 	}
 
 	if cfg.Subject == "" {
@@ -555,16 +693,35 @@ func finalizeConfig(cfg *EmailConfig) error {
 	if cfg.RetryDelay <= 0 {
 		cfg.RetryDelay = 2 * time.Second
 	}
+	applyHTTPScalingDefaults(cfg)
 
 	return nil
 }
 
-func applyHTTPProfile(cfg *EmailConfig) {
+func applyHTTPScalingDefaults(cfg *EmailConfig) {
 	if cfg.Transport != "http" {
 		return
 	}
+	if cfg.MaxConnsPerHost == 0 {
+		cfg.MaxConnsPerHost = 32
+	}
+	if cfg.MaxIdleConns == 0 {
+		cfg.MaxIdleConns = 120
+	}
+	if cfg.MaxIdleConnsHost == 0 {
+		cfg.MaxIdleConnsHost = 32
+	}
+}
+
+func applyHTTPProfile(cfg *EmailConfig) {
 	profile, ok := httpProviderProfiles[cfg.Provider]
 	if !ok {
+		return
+	}
+	if cfg.Transport == "" {
+		cfg.Transport = "http"
+	}
+	if cfg.Transport != "http" {
 		return
 	}
 	if cfg.Endpoint == "" {
@@ -578,6 +735,56 @@ func applyHTTPProfile(cfg *EmailConfig) {
 	}
 	if cfg.HTTPContentType == "" {
 		cfg.HTTPContentType = profile.ContentType
+	}
+	if cfg.MaxConnsPerHost == 0 && profile.Endpoint != "" {
+		cfg.MaxConnsPerHost = 32
+	}
+	if cfg.MaxIdleConns == 0 && profile.Endpoint != "" {
+		cfg.MaxIdleConns = 120
+	}
+	if cfg.MaxIdleConnsHost == 0 && profile.Endpoint != "" {
+		cfg.MaxIdleConnsHost = 32
+	}
+	if cfg.Provider == "ses" || cfg.Provider == "aws_ses" || cfg.Provider == "amazon_ses" {
+		if cfg.HTTPAuth == "" {
+			cfg.HTTPAuth = "aws_sigv4"
+		}
+		if cfg.AWSRegion == "" {
+			cfg.AWSRegion = inferAWSRegion(cfg.Endpoint)
+		}
+	}
+	if cfg.Provider == "postmark" && cfg.HTTPAuth == "" {
+		cfg.HTTPAuth = "api_key_header"
+		cfg.HTTPAuthHeader = "X-Postmark-Server-Token"
+	}
+	if cfg.Provider == "resend" && cfg.HTTPAuth == "" {
+		cfg.HTTPAuth = "bearer"
+	}
+	if cfg.Provider == "sparkpost" && cfg.HTTPAuth == "" {
+		cfg.HTTPAuth = "bearer"
+	}
+	// Seed sensible per-provider scaling defaults if not provided.
+	switch cfg.Provider {
+	case "ses", "aws_ses", "amazon_ses", "sendgrid", "sparkpost", "postmark", "resend", "mailgun":
+		if cfg.MaxConnsPerHost == 0 {
+			cfg.MaxConnsPerHost = 64
+		}
+		if cfg.MaxIdleConns == 0 {
+			cfg.MaxIdleConns = 200
+		}
+		if cfg.MaxIdleConnsHost == 0 {
+			cfg.MaxIdleConnsHost = 64
+		}
+	case "brevo", "sendinblue", "mailtrap":
+		if cfg.MaxConnsPerHost == 0 {
+			cfg.MaxConnsPerHost = 32
+		}
+		if cfg.MaxIdleConns == 0 {
+			cfg.MaxIdleConns = 120
+		}
+		if cfg.MaxIdleConnsHost == 0 {
+			cfg.MaxIdleConnsHost = 32
+		}
 	}
 	if cfg.Headers == nil {
 		cfg.Headers = map[string]string{}
@@ -694,8 +901,9 @@ func sendEmail(cfg *EmailConfig) error {
 			return nil
 		}
 		if attempt < cfg.RetryCount {
-			log.Printf("attempt %d/%d failed: %v (retrying in %s)", attempt, cfg.RetryCount, lastErr, cfg.RetryDelay)
-			time.Sleep(cfg.RetryDelay)
+			delay := backoffDelay(attempt, cfg.RetryDelay)
+			log.Printf("attempt %d/%d failed: %v (retrying in %s)", attempt, cfg.RetryCount, lastErr, delay)
+			time.Sleep(delay)
 		}
 	}
 	return lastErr
@@ -734,9 +942,14 @@ func sendViaSMTP(cfg *EmailConfig) error {
 	}
 
 	if cfg.Username != "" && cfg.Password != "" {
-		auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-		if err := client.Auth(auth); err != nil {
+		auth, err := buildSMTPAuth(cfg)
+		if err != nil {
 			return err
+		}
+		if auth != nil {
+			if err := client.Auth(auth); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -783,12 +996,12 @@ func sendViaHTTP(cfg *EmailConfig) error {
 	if err != nil {
 		return err
 	}
-	bodyReader, finalType, err := encodePayload(payload, hintedType)
+	bodyBytes, finalType, err := encodePayload(payload, hintedType)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(cfg.HTTPMethod, endpoint, bodyReader)
+	req, err := http.NewRequest(cfg.HTTPMethod, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
@@ -809,12 +1022,9 @@ func sendViaHTTP(cfg *EmailConfig) error {
 	if !contentTypeSet {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	applyAuthHeaders(req, cfg)
+	applyAuthHeaders(req, cfg, bodyBytes)
 
-	client := &http.Client{Timeout: cfg.Timeout}
-	if cfg.SkipTLSVerify {
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	client := getHTTPClient(cfg)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -822,13 +1032,62 @@ func sendViaHTTP(cfg *EmailConfig) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("http send failed: %s %s", resp.Status, strings.TrimSpace(string(respBody)))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		reqID := resp.Header.Get("x-amzn-requestid")
+		if reqID == "" {
+			reqID = resp.Header.Get("x-request-id")
+		}
+		if reqID != "" {
+			return fmt.Errorf("http send failed: %s request_id=%s body=%s", resp.Status, reqID, strings.TrimSpace(string(respBody)))
+		}
+		return fmt.Errorf("http send failed: %s body=%s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	if id := resp.Header.Get("x-amzn-requestid"); id != "" {
+		log.Printf("http send ok (request_id=%s)", id)
 	}
 	return nil
 }
 
-func (cfg *EmailConfig) resolveHTTPPayload() (interface{}, string, error) {
+func getHTTPClient(cfg *EmailConfig) *http.Client {
+	key := httpClientKey(cfg)
+	httpClientMu.Lock()
+	if client, ok := httpClientCache[key]; ok {
+		httpClientMu.Unlock()
+		return client
+	}
+	transport := &http.Transport{
+		ForceAttemptHTTP2:   true,
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: cfg.SkipTLSVerify},
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        choosePositive(cfg.MaxIdleConns, 200),
+		MaxIdleConnsPerHost: choosePositive(cfg.MaxIdleConnsHost, 32),
+		MaxConnsPerHost:     cfg.MaxConnsPerHost,
+		DisableKeepAlives:   cfg.DisableKeepAlives,
+	}
+	client := &http.Client{Timeout: cfg.Timeout, Transport: transport}
+	httpClientCache[key] = client
+	httpClientMu.Unlock()
+	return client
+}
+
+func httpClientKey(cfg *EmailConfig) string {
+	host := cfg.Host
+	if cfg.Endpoint != "" {
+		if parsed, err := url.Parse(cfg.Endpoint); err == nil && parsed.Host != "" {
+			host = parsed.Host
+		}
+	}
+	return fmt.Sprintf("host-%s-tls-%t-maxc-%d-idle-%d-idlehost-%d-noka-%t-timeout-%d", host, cfg.SkipTLSVerify, cfg.MaxConnsPerHost, cfg.MaxIdleConns, cfg.MaxIdleConnsHost, cfg.DisableKeepAlives, cfg.Timeout)
+}
+
+func choosePositive(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func (cfg *EmailConfig) resolveHTTPPayload() (any, string, error) {
 	if cfg.HTTPPayload != nil {
 		return cfg.HTTPPayload, pickContentType(cfg.HTTPContentType, ""), nil
 	}
@@ -846,25 +1105,25 @@ func (cfg *EmailConfig) resolveHTTPPayload() (interface{}, string, error) {
 	return payload, pickContentType(cfg.HTTPContentType, ""), err
 }
 
-func encodePayload(payload interface{}, contentType string) (io.Reader, string, error) {
+func encodePayload(payload any, contentType string) ([]byte, string, error) {
 	switch v := payload.(type) {
 	case nil:
-		return bytes.NewReader(nil), contentType, nil
+		return []byte{}, contentType, nil
 	case []byte:
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
-		return bytes.NewReader(v), contentType, nil
+		return v, contentType, nil
 	case string:
 		if contentType == "" {
 			contentType = "text/plain"
 		}
-		return strings.NewReader(v), contentType, nil
+		return []byte(v), contentType, nil
 	case url.Values:
 		if contentType == "" {
 			contentType = "application/x-www-form-urlencoded"
 		}
-		return strings.NewReader(v.Encode()), contentType, nil
+		return []byte(v.Encode()), contentType, nil
 	default:
 		data, err := json.Marshal(v)
 		if err != nil {
@@ -873,7 +1132,7 @@ func encodePayload(payload interface{}, contentType string) (io.Reader, string, 
 		if contentType == "" {
 			contentType = "application/json"
 		}
-		return bytes.NewReader(data), contentType, nil
+		return data, contentType, nil
 	}
 }
 
@@ -884,8 +1143,8 @@ func pickContentType(primary, fallback string) string {
 	return fallback
 }
 
-func buildHTTPPayload(cfg *EmailConfig) (map[string]interface{}, error) {
-	payload := map[string]interface{}{
+func buildHTTPPayload(cfg *EmailConfig) (map[string]any, error) {
+	payload := map[string]any{
 		"from":        cfg.From,
 		"from_name":   cfg.FromName,
 		"reply_to":    cfg.ReplyTo,
@@ -916,8 +1175,8 @@ func buildHTTPPayload(cfg *EmailConfig) (map[string]interface{}, error) {
 	return payload, nil
 }
 
-func buildSendGridPayload(cfg *EmailConfig) (interface{}, string, error) {
-	personalization := map[string]interface{}{
+func buildSendGridPayload(cfg *EmailConfig) (any, string, error) {
+	personalization := map[string]any{
 		"to": addressMaps(parseAddressList(cfg.To), "email", "name"),
 	}
 	if len(cfg.CC) > 0 {
@@ -940,8 +1199,8 @@ func buildSendGridPayload(cfg *EmailConfig) (interface{}, string, error) {
 		contents = append(contents, map[string]string{"type": "text/plain", "value": fallbackBody(cfg.TextBody)})
 	}
 
-	payload := map[string]interface{}{
-		"personalizations": []interface{}{personalization},
+	payload := map[string]any{
+		"personalizations": []any{personalization},
 		"from":             fromEntry,
 		"subject":          cfg.Subject,
 		"content":          contents,
@@ -956,11 +1215,18 @@ func buildSendGridPayload(cfg *EmailConfig) (interface{}, string, error) {
 	if len(encoded) > 0 {
 		attachments := make([]map[string]string, 0, len(encoded))
 		for _, att := range encoded {
-			attachments = append(attachments, map[string]string{
+			entry := map[string]string{
 				"content":  att.Content,
 				"type":     att.MIMEType,
 				"filename": att.Filename,
-			})
+			}
+			if att.Inline {
+				entry["disposition"] = "inline"
+				if att.ContentID != "" {
+					entry["content_id"] = att.ContentID
+				}
+			}
+			attachments = append(attachments, entry)
 		}
 		payload["attachments"] = attachments
 	}
@@ -968,10 +1234,10 @@ func buildSendGridPayload(cfg *EmailConfig) (interface{}, string, error) {
 	return payload, "application/json", nil
 }
 
-func buildMailtrapPayload(cfg *EmailConfig) (interface{}, string, error) {
+func buildMailtrapPayload(cfg *EmailConfig) (any, string, error) {
 	fromName, fromEmail := splitAddress(cfg.From)
 	sender := singleAddressMap(simpleAddress{Name: fromName, Email: fromEmail}, "email", "name")
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"from":    sender,
 		"to":      addressMaps(parseAddressList(cfg.To), "email", "name"),
 		"subject": cfg.Subject,
@@ -994,11 +1260,18 @@ func buildMailtrapPayload(cfg *EmailConfig) (interface{}, string, error) {
 	if len(encoded) > 0 {
 		attachments := make([]map[string]string, 0, len(encoded))
 		for _, att := range encoded {
-			attachments = append(attachments, map[string]string{
+			entry := map[string]string{
 				"content":  att.Content,
 				"type":     att.MIMEType,
 				"filename": att.Filename,
-			})
+			}
+			if att.Inline {
+				entry["disposition"] = "inline"
+				if att.ContentID != "" {
+					entry["content_id"] = att.ContentID
+				}
+			}
+			attachments = append(attachments, entry)
 		}
 		payload["attachments"] = attachments
 	}
@@ -1006,10 +1279,10 @@ func buildMailtrapPayload(cfg *EmailConfig) (interface{}, string, error) {
 	return payload, "application/json", nil
 }
 
-func buildBrevoPayload(cfg *EmailConfig) (interface{}, string, error) {
+func buildBrevoPayload(cfg *EmailConfig) (any, string, error) {
 	fromName, fromEmail := splitAddress(cfg.From)
 	sender := singleAddressMap(simpleAddress{Name: fromName, Email: fromEmail}, "email", "name")
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"sender":      sender,
 		"to":          addressMaps(parseAddressList(cfg.To), "email", "name"),
 		"subject":     cfg.Subject,
@@ -1032,10 +1305,17 @@ func buildBrevoPayload(cfg *EmailConfig) (interface{}, string, error) {
 	if len(encoded) > 0 {
 		attachments := make([]map[string]string, 0, len(encoded))
 		for _, att := range encoded {
-			attachments = append(attachments, map[string]string{
+			entry := map[string]string{
 				"name":    att.Filename,
 				"content": att.Content,
-			})
+			}
+			if att.Inline {
+				entry["disposition"] = "inline"
+				if att.ContentID != "" {
+					entry["contentId"] = att.ContentID
+				}
+			}
+			attachments = append(attachments, entry)
 		}
 		payload["attachment"] = attachments
 	}
@@ -1043,12 +1323,312 @@ func buildBrevoPayload(cfg *EmailConfig) (interface{}, string, error) {
 	return payload, "application/json", nil
 }
 
-func applyAuthHeaders(req *http.Request, cfg *EmailConfig) {
+func buildSESPayload(cfg *EmailConfig) (any, string, error) {
+	raw, err := buildMessage(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	dest := map[string][]string{}
+	if len(cfg.To) > 0 {
+		dest["ToAddresses"] = cfg.To
+	}
+	if len(cfg.CC) > 0 {
+		dest["CcAddresses"] = cfg.CC
+	}
+	if len(cfg.BCC) > 0 {
+		dest["BccAddresses"] = cfg.BCC
+	}
+	payload := map[string]any{
+		"Content": map[string]any{
+			"Raw": map[string]string{
+				"Data": base64.StdEncoding.EncodeToString([]byte(raw)),
+			},
+		},
+	}
+	if len(dest) > 0 {
+		payload["Destination"] = dest
+	}
+	if cfg.From != "" {
+		payload["FromEmailAddress"] = cfg.From
+	}
+	if cfg.ConfigurationSet != "" {
+		payload["ConfigurationSetName"] = cfg.ConfigurationSet
+	}
+	if len(cfg.Tags) > 0 {
+		tags := make([]map[string]string, 0, len(cfg.Tags))
+		for k, v := range cfg.Tags {
+			tags = append(tags, map[string]string{"Name": k, "Value": v})
+		}
+		sort.Slice(tags, func(i, j int) bool { return tags[i]["Name"] < tags[j]["Name"] })
+		payload["EmailTags"] = tags
+	}
+	return payload, "application/json", nil
+}
+
+func buildPostmarkPayload(cfg *EmailConfig) (any, string, error) {
+	payload := map[string]any{
+		"From":    cfg.From,
+		"To":      strings.Join(cfg.To, ","),
+		"Subject": cfg.Subject,
+	}
+	if len(cfg.CC) > 0 {
+		payload["Cc"] = strings.Join(cfg.CC, ",")
+	}
+	if len(cfg.BCC) > 0 {
+		payload["Bcc"] = strings.Join(cfg.BCC, ",")
+	}
+	if cfg.TextBody != "" {
+		payload["TextBody"] = fallbackBody(cfg.TextBody)
+	}
+	if cfg.HTMLBody != "" {
+		payload["HtmlBody"] = cfg.HTMLBody
+	}
+	if reply := firstAddressEntry(cfg.ReplyTo); reply.Email != "" {
+		payload["ReplyTo"] = reply.Email
+	}
+	if len(cfg.Headers) > 0 {
+		var headers []map[string]string
+		for k, v := range cfg.Headers {
+			headers = append(headers, map[string]string{"Name": k, "Value": v})
+		}
+		payload["Headers"] = headers
+	}
+	encoded, err := encodeAllAttachments(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(encoded) > 0 {
+		attachments := make([]map[string]string, 0, len(encoded))
+		for _, att := range encoded {
+			entry := map[string]string{
+				"Name":        att.Filename,
+				"Content":     att.Content,
+				"ContentType": att.MIMEType,
+			}
+			if att.ContentID != "" {
+				entry["ContentID"] = att.ContentID
+			}
+			if att.Inline {
+				entry["ContentDisposition"] = "inline"
+			}
+			attachments = append(attachments, entry)
+		}
+		payload["Attachments"] = attachments
+	}
+	return payload, "application/json", nil
+}
+
+func buildSparkPostPayload(cfg *EmailConfig) (any, string, error) {
+	encoded, err := encodeAllAttachments(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	inlineImages := []map[string]string{}
+	attachments := []map[string]string{}
+	for _, att := range encoded {
+		entry := map[string]string{
+			"type": att.MIMEType,
+			"name": att.Filename,
+			"data": att.Content,
+		}
+		if att.Inline {
+			if att.ContentID != "" {
+				entry["name"] = att.ContentID
+			}
+			inlineImages = append(inlineImages, entry)
+		} else {
+			attachments = append(attachments, entry)
+		}
+	}
+	content := map[string]any{
+		"from":    map[string]string{"email": cfg.From, "name": cfg.FromName},
+		"subject": cfg.Subject,
+		"text":    fallbackBody(cfg.TextBody),
+	}
+	if cfg.HTMLBody != "" {
+		content["html"] = cfg.HTMLBody
+	}
+	if len(attachments) > 0 {
+		content["attachments"] = attachments
+	}
+	if len(inlineImages) > 0 {
+		content["inline_images"] = inlineImages
+	}
+	recipients := make([]map[string]any, 0, len(cfg.To))
+	for _, addr := range cfg.To {
+		recipients = append(recipients, map[string]any{
+			"address": map[string]string{"email": strings.TrimSpace(addr)},
+		})
+	}
+	payload := map[string]any{
+		"recipients": recipients,
+		"content":    content,
+	}
+	if len(cfg.Tags) > 0 {
+		var tags []string
+		for k := range cfg.Tags {
+			tags = append(tags, k)
+		}
+		sort.Strings(tags)
+		payload["metadata"] = cfg.Tags
+		payload["description"] = strings.Join(tags, ",")
+	}
+	return payload, "application/json", nil
+}
+
+func buildResendPayload(cfg *EmailConfig) (any, string, error) {
+	payload := map[string]any{
+		"from":    cfg.From,
+		"to":      cfg.To,
+		"subject": cfg.Subject,
+		"text":    fallbackBody(cfg.TextBody),
+		"html":    cfg.HTMLBody,
+	}
+	if len(cfg.CC) > 0 {
+		payload["cc"] = cfg.CC
+	}
+	if len(cfg.BCC) > 0 {
+		payload["bcc"] = cfg.BCC
+	}
+	if reply := firstAddressEntry(cfg.ReplyTo); reply.Email != "" {
+		payload["reply_to"] = []string{reply.Email}
+	}
+	encoded, err := encodeAllAttachments(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(encoded) > 0 {
+		attachments := make([]map[string]string, 0, len(encoded))
+		for _, att := range encoded {
+			entry := map[string]string{
+				"filename":     att.Filename,
+				"content":      att.Content,
+				"content_type": att.MIMEType,
+			}
+			if att.ContentID != "" {
+				entry["cid"] = att.ContentID
+			}
+			if att.Inline {
+				entry["disposition"] = "inline"
+			}
+			attachments = append(attachments, entry)
+		}
+		payload["attachments"] = attachments
+	}
+	return payload, "application/json", nil
+}
+
+func buildMailgunPayload(cfg *EmailConfig) (any, string, error) {
+	if len(cfg.Attachments) > 0 {
+		return nil, "", errors.New("mailgun http builder does not support attachments; use SMTP or raw payload")
+	}
+	domain := strings.TrimSpace(firstString(cfg.AdditionalData, "domain", "mailgun_domain"))
+	if domain == "" {
+		domain = inferMailgunDomain(cfg.Endpoint)
+	}
+	if domain == "" {
+		return nil, "", errors.New("mailgun domain is required (set 'domain' in payload)")
+	}
+	if cfg.Endpoint != "" && !strings.Contains(cfg.Endpoint, "/messages") {
+		cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/") + "/" + domain + "/messages"
+	}
+	form := url.Values{}
+	fromAddr := cfg.From
+	if cfg.FromName != "" {
+		fromAddr = fmt.Sprintf("%s <%s>", cfg.FromName, cfg.From)
+	}
+	form.Set("from", fromAddr)
+	for _, to := range cfg.To {
+		form.Add("to", to)
+	}
+	for _, cc := range cfg.CC {
+		form.Add("cc", cc)
+	}
+	for _, bcc := range cfg.BCC {
+		form.Add("bcc", bcc)
+	}
+	if reply := firstAddressEntry(cfg.ReplyTo); reply.Email != "" {
+		form.Set("h:Reply-To", reply.Email)
+	}
+	form.Set("subject", cfg.Subject)
+	if cfg.TextBody != "" {
+		form.Set("text", fallbackBody(cfg.TextBody))
+	}
+	if cfg.HTMLBody != "" {
+		form.Set("html", cfg.HTMLBody)
+	}
+	return form, "application/x-www-form-urlencoded", nil
+}
+
+func inferMailgunDomain(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i, segment := range segments {
+		if strings.EqualFold(segment, "v3") && i+1 < len(segments) {
+			return segments[i+1]
+		}
+	}
+	return ""
+}
+
+func applyAuthHeaders(req *http.Request, cfg *EmailConfig, body []byte) {
 	token := strings.TrimSpace(cfg.APIToken)
 	apiKey := strings.TrimSpace(cfg.APIKey)
 	if token == "" {
 		token = apiKey
 	}
+
+	// Explicit auth override takes priority.
+	switch cfg.HTTPAuth {
+	case "none":
+		return
+	case "basic":
+		user := cfg.Username
+		pass := cfg.Password
+		if user != "" || pass != "" {
+			req.SetBasicAuth(user, pass)
+			return
+		}
+	case "bearer":
+		if token == "" {
+			break
+		}
+		if req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", strings.TrimSpace(cfg.HTTPAuthPrefix+" "+token))
+		}
+		return
+	case "api_key_header":
+		header := cfg.HTTPAuthHeader
+		if header == "" {
+			header = "X-API-Key"
+		}
+		if token != "" && req.Header.Get(header) == "" {
+			req.Header.Set(header, token)
+		}
+		return
+	case "api_key_query":
+		param := cfg.HTTPAuthQuery
+		if param == "" {
+			param = "api_key"
+		}
+		if token != "" {
+			q := req.URL.Query()
+			if q.Get(param) == "" {
+				q.Set(param, token)
+				req.URL.RawQuery = q.Encode()
+			}
+		}
+		return
+	case "aws_sigv4":
+		if err := signAWSv4(req, body, cfg); err != nil {
+			log.Printf("sigv4 signing failed: %v", err)
+		}
+		return
+	}
+
 	switch cfg.Provider {
 	case "brevo", "sendinblue":
 		if apiKey == "" {
@@ -1065,14 +1645,44 @@ func applyAuthHeaders(req *http.Request, cfg *EmailConfig) {
 		}
 		req.SetBasicAuth("api", token)
 		return
+	case "postmark":
+		if token == "" {
+			return
+		}
+		if req.Header.Get("X-Postmark-Server-Token") == "" {
+			req.Header.Set("X-Postmark-Server-Token", token)
+		}
+		return
+	case "sparkpost":
+		if token == "" {
+			return
+		}
+		if req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", token)
+		}
+		return
+	case "resend":
+		if token == "" {
+			return
+		}
+		if req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return
+	case "ses", "aws_ses", "amazon_ses":
+		if err := signAWSv4(req, body, cfg); err != nil {
+			log.Printf("sigv4 signing failed: %v", err)
+		}
+		return
 	}
+
 	if token == "" {
 		return
 	}
 	if req.Header.Get("Authorization") != "" {
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", strings.TrimSpace(cfg.HTTPAuthPrefix+" "+token))
 }
 
 func buildMessage(cfg *EmailConfig) (string, error) {
@@ -1090,21 +1700,42 @@ func buildMessage(cfg *EmailConfig) (string, error) {
 	msg.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
 	msg.WriteString(fmt.Sprintf("Message-ID: <%s@%s>\r\n", randomBoundary("msg"), cfg.Host))
 	msg.WriteString("MIME-Version: 1.0\r\n")
+	if cfg.ReturnPath != "" {
+		msg.WriteString(fmt.Sprintf("Return-Path: %s\r\n", cfg.EnvelopeFrom))
+	}
 	for k, v := range cfg.Headers {
 		if strings.EqualFold(k, "Content-Type") {
 			continue
 		}
 		msg.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
+	if len(cfg.ListUnsubscribe) > 0 {
+		msg.WriteString(fmt.Sprintf("List-Unsubscribe: %s\r\n", strings.Join(cfg.ListUnsubscribe, ", ")))
+		if cfg.ListUnsubscribePost {
+			msg.WriteString("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+		}
+	}
+	if cfg.ConfigurationSet != "" {
+		msg.WriteString(fmt.Sprintf("X-SES-CONFIGURATION-SET: %s\r\n", cfg.ConfigurationSet))
+	}
+	if len(cfg.Tags) > 0 {
+		var parts []string
+		for k, v := range cfg.Tags {
+			parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+		}
+		sort.Strings(parts)
+		msg.WriteString(fmt.Sprintf("X-SES-MESSAGE-TAGS: %s\r\n", strings.Join(parts, ";")))
+	}
 
-	if len(cfg.Attachments) > 0 {
+	inline, regular := partitionAttachments(cfg.Attachments)
+	if len(regular) > 0 {
 		mixedBoundary := randomBoundary("mixed")
 		msg.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%s\r\n\r\n", mixedBoundary))
-		if err := writeBodyPart(&msg, cfg, mixedBoundary); err != nil {
+		if err := writeBodySection(&msg, cfg, inline, mixedBoundary); err != nil {
 			return "", err
 		}
-		for _, att := range cfg.Attachments {
-			if err := writeAttachmentPart(&msg, att, mixedBoundary); err != nil {
+		for _, att := range regular {
+			if err := writeAttachmentPart(&msg, att, mixedBoundary, false); err != nil {
 				return "", err
 			}
 		}
@@ -1112,22 +1743,61 @@ func buildMessage(cfg *EmailConfig) (string, error) {
 		return msg.String(), nil
 	}
 
-	if err := writeStandaloneBody(&msg, cfg); err != nil {
+	if err := writeBodySection(&msg, cfg, inline, ""); err != nil {
 		return "", err
 	}
 	return msg.String(), nil
 }
 
-func writeBodyPart(msg *strings.Builder, cfg *EmailConfig, boundary string) error {
-	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-	return writeAlternativeBody(msg, cfg)
+func writeBodySection(msg *strings.Builder, cfg *EmailConfig, inline []Attachment, boundary string) error {
+	if boundary != "" {
+		msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	}
+	return writeAlternativeBody(msg, cfg, inline)
 }
 
-func writeStandaloneBody(msg *strings.Builder, cfg *EmailConfig) error {
-	return writeAlternativeBody(msg, cfg)
-}
+func writeAlternativeBody(msg *strings.Builder, cfg *EmailConfig, inline []Attachment) error {
+	hasInline := len(inline) > 0 && cfg.HTMLBody != ""
+	if hasInline && cfg.TextBody != "" {
+		altBoundary := randomBoundary("alt")
+		relatedBoundary := randomBoundary("rel")
+		msg.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=%s\r\n\r\n", altBoundary))
+		msg.WriteString(fmt.Sprintf("--%s\r\n", altBoundary))
+		msg.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
+		msg.WriteString(cfg.TextBody)
+		msg.WriteString("\r\n\r\n")
+		msg.WriteString(fmt.Sprintf("--%s\r\n", altBoundary))
+		msg.WriteString(fmt.Sprintf("Content-Type: multipart/related; boundary=%s\r\n\r\n", relatedBoundary))
+		msg.WriteString(fmt.Sprintf("--%s\r\n", relatedBoundary))
+		msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n\r\n")
+		msg.WriteString(cfg.HTMLBody)
+		msg.WriteString("\r\n\r\n")
+		for _, att := range inline {
+			if err := writeAttachmentPart(msg, att, relatedBoundary, true); err != nil {
+				return err
+			}
+		}
+		msg.WriteString(fmt.Sprintf("--%s--\r\n", relatedBoundary))
+		msg.WriteString(fmt.Sprintf("--%s--\r\n", altBoundary))
+		return nil
+	}
 
-func writeAlternativeBody(msg *strings.Builder, cfg *EmailConfig) error {
+	if hasInline {
+		relatedBoundary := randomBoundary("rel")
+		msg.WriteString(fmt.Sprintf("Content-Type: multipart/related; boundary=%s\r\n\r\n", relatedBoundary))
+		msg.WriteString(fmt.Sprintf("--%s\r\n", relatedBoundary))
+		msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n\r\n")
+		msg.WriteString(cfg.HTMLBody)
+		msg.WriteString("\r\n\r\n")
+		for _, att := range inline {
+			if err := writeAttachmentPart(msg, att, relatedBoundary, true); err != nil {
+				return err
+			}
+		}
+		msg.WriteString(fmt.Sprintf("--%s--\r\n", relatedBoundary))
+		return nil
+	}
+
 	if cfg.HTMLBody != "" && cfg.TextBody != "" {
 		altBoundary := randomBoundary("alt")
 		msg.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=%s\r\n\r\n", altBoundary))
@@ -1155,14 +1825,28 @@ func writeAlternativeBody(msg *strings.Builder, cfg *EmailConfig) error {
 	return nil
 }
 
-func writeAttachmentPart(msg *strings.Builder, att Attachment, boundary string) error {
+func writeAttachmentPart(msg *strings.Builder, att Attachment, boundary string, inline bool) error {
 	data, filename, mimeType, err := loadAttachment(att)
 	if err != nil {
 		return err
 	}
 	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	msg.WriteString(fmt.Sprintf("Content-Type: %s\r\n", mimeType))
-	msg.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", filename))
+	disposition := "attachment"
+	if inline {
+		disposition = "inline"
+	}
+	msg.WriteString(fmt.Sprintf("Content-Disposition: %s; filename=\"%s\"\r\n", disposition, filename))
+	if inline {
+		cid := att.ContentID
+		if cid == "" {
+			cid = filename
+		}
+		if !strings.HasPrefix(cid, "<") {
+			cid = "<" + cid + ">"
+		}
+		msg.WriteString(fmt.Sprintf("Content-ID: %s\r\n", cid))
+	}
 	msg.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
 	encoded := base64.StdEncoding.EncodeToString(data)
 	for i := 0; i < len(encoded); i += 76 {
@@ -1227,6 +1911,50 @@ func dialTLSClient(cfg *EmailConfig, addr string) (*smtp.Client, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+func buildSMTPAuth(cfg *EmailConfig) (smtp.Auth, error) {
+	authType := strings.ToLower(strings.TrimSpace(cfg.SMTPAuth))
+	switch authType {
+	case "", "plain":
+		return smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host), nil
+	case "login":
+		return &loginAuth{username: cfg.Username, password: cfg.Password, host: cfg.Host}, nil
+	case "cram-md5", "crammd5":
+		return smtp.CRAMMD5Auth(cfg.Username, cfg.Password), nil
+	case "none":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported smtp auth %s", authType)
+	}
+}
+
+// loginAuth implements the LOGIN SMTP auth mechanism.
+type loginAuth struct {
+	username string
+	password string
+	host     string
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	if server.Name != a.host {
+		return "", nil, fmt.Errorf("unexpected server name %s", server.Name)
+	}
+	return "LOGIN", nil, nil
+}
+
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if more {
+		switch strings.ToLower(string(fromServer)) {
+		case "username:", "user:":
+			return []byte(a.username), nil
+		case "password:", "pass:":
+			return []byte(a.password), nil
+		default:
+			return nil, fmt.Errorf("unexpected login challenge: %s", string(fromServer))
+		}
+	}
+	return nil, nil
 }
 
 func loadAttachment(att Attachment) ([]byte, string, string, error) {
@@ -1319,12 +2047,25 @@ func encodeAllAttachments(cfg *EmailConfig) ([]encodedAttachment, error) {
 			return nil, err
 		}
 		result = append(result, encodedAttachment{
-			Filename: filename,
-			MIMEType: mimeType,
-			Content:  base64.StdEncoding.EncodeToString(data),
+			Filename:  filename,
+			MIMEType:  mimeType,
+			Content:   base64.StdEncoding.EncodeToString(data),
+			Inline:    att.Inline,
+			ContentID: att.ContentID,
 		})
 	}
 	return result, nil
+}
+
+func partitionAttachments(list []Attachment) (inline []Attachment, regular []Attachment) {
+	for _, att := range list {
+		if att.Inline {
+			inline = append(inline, att)
+			continue
+		}
+		regular = append(regular, att)
+	}
+	return inline, regular
 }
 
 func detectMIMEType(filename string, data []byte) string {
@@ -1392,7 +2133,7 @@ func parseFilenameFromDisposition(header string) string {
 type configEntry struct {
 	original  string
 	sanitized string
-	value     interface{}
+	value     any
 	used      bool
 }
 
@@ -1400,7 +2141,7 @@ type normalizedConfig struct {
 	entries map[string][]*configEntry
 }
 
-func newNormalizedConfig(raw map[string]interface{}) *normalizedConfig {
+func newNormalizedConfig(raw map[string]any) *normalizedConfig {
 	entries := make(map[string][]*configEntry)
 	for key, value := range raw {
 		sanitized := sanitizeKey(key)
@@ -1422,15 +2163,15 @@ func (n *normalizedConfig) leftOverEntries() []*configEntry {
 	return result
 }
 
-func (n *normalizedConfig) leftovers() map[string]interface{} {
-	result := make(map[string]interface{})
+func (n *normalizedConfig) leftovers() map[string]any {
+	result := make(map[string]any)
 	for _, entry := range n.leftOverEntries() {
 		result[entry.original] = entry.value
 	}
 	return result
 }
 
-func (n *normalizedConfig) pullValue(canonical string) (interface{}, bool) {
+func (n *normalizedConfig) pullValue(canonical string) (any, bool) {
 	if canonical == "" {
 		return nil, false
 	}
@@ -1445,7 +2186,7 @@ func (n *normalizedConfig) pullValue(canonical string) (interface{}, bool) {
 	return n.consumeFuzzy(canonical)
 }
 
-func (n *normalizedConfig) consumeAliases(aliases []string) (interface{}, bool) {
+func (n *normalizedConfig) consumeAliases(aliases []string) (any, bool) {
 	for _, alias := range aliases {
 		if val, ok := n.consumeExact(alias); ok {
 			return val, true
@@ -1454,7 +2195,7 @@ func (n *normalizedConfig) consumeAliases(aliases []string) (interface{}, bool) 
 	return nil, false
 }
 
-func (n *normalizedConfig) consumeExact(key string) (interface{}, bool) {
+func (n *normalizedConfig) consumeExact(key string) (any, bool) {
 	sanitized := sanitizeKey(key)
 	if entries, ok := n.entries[sanitized]; ok {
 		for _, entry := range entries {
@@ -1468,7 +2209,7 @@ func (n *normalizedConfig) consumeExact(key string) (interface{}, bool) {
 	return nil, false
 }
 
-func (n *normalizedConfig) consumeFuzzy(target string) (interface{}, bool) {
+func (n *normalizedConfig) consumeFuzzy(target string) (any, bool) {
 	token := sanitizeKey(target)
 	if len(token) < 4 {
 		return nil, false
@@ -1532,11 +2273,11 @@ func getStringArrayField(norm *normalizedConfig, canonical string) []string {
 	return normalizeStringSlice(val)
 }
 
-func normalizeStringSlice(val interface{}) []string {
+func normalizeStringSlice(val any) []string {
 	switch v := val.(type) {
 	case string:
 		return splitList(v)
-	case []interface{}:
+	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
 			switch entry := item.(type) {
@@ -1647,6 +2388,10 @@ func getBoolField(norm *normalizedConfig, canonical string) bool {
 	if !ok || val == nil {
 		return false
 	}
+	return normalizeBool(val)
+}
+
+func normalizeBool(val any) bool {
 	switch v := val.(type) {
 	case bool:
 		return v
@@ -1689,7 +2434,7 @@ func getStringMapField(norm *normalizedConfig, canonical string) map[string]stri
 	}
 	result := map[string]string{}
 	switch v := val.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		for key, value := range v {
 			result[key] = strings.TrimSpace(fmt.Sprint(value))
 		}
@@ -1697,7 +2442,7 @@ func getStringMapField(norm *normalizedConfig, canonical string) map[string]stri
 		for key, value := range v {
 			result[key] = strings.TrimSpace(value)
 		}
-	case []interface{}:
+	case []any:
 		for _, item := range v {
 			switch entry := item.(type) {
 			case string:
@@ -1705,7 +2450,7 @@ func getStringMapField(norm *normalizedConfig, canonical string) map[string]stri
 				if k != "" {
 					result[k] = val
 				}
-			case map[string]interface{}:
+			case map[string]any:
 				for key, value := range entry {
 					result[key] = strings.TrimSpace(fmt.Sprint(value))
 				}
@@ -1726,7 +2471,7 @@ func getStringMapField(norm *normalizedConfig, canonical string) map[string]stri
 	return result
 }
 
-func getObjectField(norm *normalizedConfig, canonical string) map[string]interface{} {
+func getObjectField(norm *normalizedConfig, canonical string) map[string]any {
 	val, ok := norm.pullValue(canonical)
 	if !ok || val == nil {
 		return nil
@@ -1734,12 +2479,12 @@ func getObjectField(norm *normalizedConfig, canonical string) map[string]interfa
 	return normalizeObject(val)
 }
 
-func mergeAdditional(base map[string]interface{}, extras map[string]interface{}, overwrite bool) map[string]interface{} {
+func mergeAdditional(base map[string]any, extras map[string]any, overwrite bool) map[string]any {
 	if len(extras) == 0 {
 		return base
 	}
 	if base == nil {
-		base = make(map[string]interface{}, len(extras))
+		base = make(map[string]any, len(extras))
 	}
 	for k, v := range extras {
 		if !overwrite {
@@ -1752,12 +2497,12 @@ func mergeAdditional(base map[string]interface{}, extras map[string]interface{},
 	return base
 }
 
-func normalizeObject(val interface{}) map[string]interface{} {
+func normalizeObject(val any) map[string]any {
 	switch v := val.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		return v
 	case map[string]string:
-		result := make(map[string]interface{}, len(v))
+		result := make(map[string]any, len(v))
 		for k, value := range v {
 			result[k] = value
 		}
@@ -1767,7 +2512,7 @@ func normalizeObject(val interface{}) map[string]interface{} {
 		if trimmed == "" {
 			return nil
 		}
-		var decoded map[string]interface{}
+		var decoded map[string]any
 		if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
 			return decoded
 		}
@@ -1791,6 +2536,8 @@ func applyPlaceholders(cfg *EmailConfig, mode placeholderMode) error {
 		if mode == placeholderModeInitial && pass == 0 {
 			cfg.From = strings.TrimSpace(resolver.expandString(cfg.From))
 			cfg.FromName = strings.TrimSpace(resolver.expandString(cfg.FromName))
+			cfg.EnvelopeFrom = strings.TrimSpace(resolver.expandString(cfg.EnvelopeFrom))
+			cfg.ReturnPath = strings.TrimSpace(resolver.expandString(cfg.ReturnPath))
 			cfg.Username = strings.TrimSpace(resolver.expandString(cfg.Username))
 			cfg.Password = resolver.expandString(cfg.Password)
 			cfg.APIKey = resolver.expandString(cfg.APIKey)
@@ -1799,6 +2546,16 @@ func applyPlaceholders(cfg *EmailConfig, mode placeholderMode) error {
 			cfg.Transport = strings.ToLower(strings.TrimSpace(resolver.expandString(cfg.Transport)))
 			cfg.Host = strings.TrimSpace(resolver.expandString(cfg.Host))
 			cfg.Endpoint = strings.TrimSpace(resolver.expandString(cfg.Endpoint))
+			cfg.HTTPAuth = strings.ToLower(strings.TrimSpace(resolver.expandString(cfg.HTTPAuth)))
+			cfg.HTTPAuthHeader = strings.TrimSpace(resolver.expandString(cfg.HTTPAuthHeader))
+			cfg.HTTPAuthQuery = strings.TrimSpace(resolver.expandString(cfg.HTTPAuthQuery))
+			cfg.HTTPAuthPrefix = strings.TrimSpace(resolver.expandString(cfg.HTTPAuthPrefix))
+			cfg.SMTPAuth = strings.ToLower(strings.TrimSpace(resolver.expandString(cfg.SMTPAuth)))
+			cfg.AWSRegion = strings.TrimSpace(resolver.expandString(cfg.AWSRegion))
+			cfg.AWSAccessKey = strings.TrimSpace(resolver.expandString(cfg.AWSAccessKey))
+			cfg.AWSSecretKey = strings.TrimSpace(resolver.expandString(cfg.AWSSecretKey))
+			cfg.AWSSessionToken = strings.TrimSpace(resolver.expandString(cfg.AWSSessionToken))
+			cfg.ConfigurationSet = strings.TrimSpace(resolver.expandString(cfg.ConfigurationSet))
 			cfg.HTMLTemplatePath = strings.TrimSpace(resolver.expandString(cfg.HTMLTemplatePath))
 			cfg.TextTemplatePath = strings.TrimSpace(resolver.expandString(cfg.TextTemplatePath))
 			cfg.BodyTemplatePath = strings.TrimSpace(resolver.expandString(cfg.BodyTemplatePath))
@@ -1806,6 +2563,7 @@ func applyPlaceholders(cfg *EmailConfig, mode placeholderMode) error {
 			cfg.To = resolver.expandSlice(cfg.To)
 			cfg.CC = resolver.expandSlice(cfg.CC)
 			cfg.BCC = resolver.expandSlice(cfg.BCC)
+			cfg.ListUnsubscribe = resolver.expandSlice(cfg.ListUnsubscribe)
 		}
 
 		cfg.Subject = resolver.expandString(cfg.Subject)
@@ -1816,6 +2574,7 @@ func applyPlaceholders(cfg *EmailConfig, mode placeholderMode) error {
 		cfg.Headers = resolver.expandMap(cfg.Headers)
 		cfg.QueryParams = resolver.expandMap(cfg.QueryParams)
 		cfg.HTTPPayload = resolver.expandObjectMap(cfg.HTTPPayload)
+		cfg.Tags = resolver.expandMap(cfg.Tags)
 		cfg.Attachments = resolver.expandAttachments(cfg.Attachments)
 
 		if err := resolver.Err(); err != nil {
@@ -1907,43 +2666,45 @@ func (r *placeholderResolver) expandAttachments(list []Attachment) []Attachment 
 	result := make([]Attachment, 0, len(list))
 	for _, att := range list {
 		result = append(result, Attachment{
-			Source:   strings.TrimSpace(r.expandString(att.Source)),
-			Name:     r.expandString(att.Name),
-			MIMEType: r.expandString(att.MIMEType),
+			Source:    strings.TrimSpace(r.expandString(att.Source)),
+			Name:      r.expandString(att.Name),
+			MIMEType:  r.expandString(att.MIMEType),
+			Inline:    att.Inline,
+			ContentID: r.expandString(att.ContentID),
 		})
 	}
 	return result
 }
 
-func (r *placeholderResolver) expandObjectMap(input map[string]interface{}) map[string]interface{} {
+func (r *placeholderResolver) expandObjectMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
 	}
 	expanded := r.expandInterface(input)
-	if out, ok := expanded.(map[string]interface{}); ok {
+	if out, ok := expanded.(map[string]any); ok {
 		return out
 	}
 	return input
 }
 
-func (r *placeholderResolver) expandInterface(value interface{}) interface{} {
+func (r *placeholderResolver) expandInterface(value any) any {
 	switch v := value.(type) {
 	case string:
 		return r.expandString(v)
-	case map[string]interface{}:
-		result := make(map[string]interface{}, len(v))
+	case map[string]any:
+		result := make(map[string]any, len(v))
 		for key, item := range v {
 			result[key] = r.expandInterface(item)
 		}
 		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
+	case []any:
+		result := make([]any, len(v))
 		for i, item := range v {
 			result[i] = r.expandInterface(item)
 		}
 		return result
 	case []string:
-		items := make([]interface{}, len(v))
+		items := make([]any, len(v))
 		for i, item := range v {
 			items[i] = r.expandInterface(item)
 		}
@@ -2019,6 +2780,168 @@ func maskPlaceholderValue(key, value string) string {
 	return value
 }
 
+func signAWSv4(req *http.Request, body []byte, cfg *EmailConfig) error {
+	region := strings.TrimSpace(cfg.AWSRegion)
+	if region == "" {
+		region = inferAWSRegion(req.URL.String())
+	}
+	if region == "" {
+		return errors.New("aws region required for sigv4")
+	}
+	access := strings.TrimSpace(cfg.AWSAccessKey)
+	secret := strings.TrimSpace(cfg.AWSSecretKey)
+	if access == "" || secret == "" {
+		return errors.New("aws credentials required for sigv4")
+	}
+	service := "ses"
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	payloadHash := sha256Hex(body)
+	if req.Header.Get("Host") == "" {
+		req.Header.Set("Host", req.URL.Host)
+	}
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	if cfg.AWSSessionToken != "" {
+		req.Header.Set("X-Amz-Security-Token", cfg.AWSSessionToken)
+	}
+
+	canonicalHeaders, signedHeaders := canonicalizeHeaders(req)
+	canonicalRequest := strings.Join([]string{
+		req.Method,
+		canonicalURI(req.URL.Path),
+		canonicalQuery(req.URL.RawQuery),
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	credentialScope := strings.Join([]string{dateStamp, region, service, "aws4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credentialScope,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+
+	signingKey := awsSigningKey(secret, dateStamp, region, service)
+	signature := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
+	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s", access, credentialScope, signedHeaders, signature)
+	req.Header.Set("Authorization", authHeader)
+	return nil
+}
+
+func canonicalURI(path string) string {
+	if path == "" {
+		return "/"
+	}
+	escaped := url.PathEscape(path)
+	return strings.ReplaceAll(escaped, "%2F", "/")
+}
+
+func canonicalQuery(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return raw
+	}
+	var keys []string
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		sortedVals := values[k]
+		sort.Strings(sortedVals)
+		for _, v := range sortedVals {
+			parts = append(parts, escapeQuery(k)+"="+escapeQuery(v))
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+func escapeQuery(value string) string {
+	encoded := url.QueryEscape(value)
+	encoded = strings.ReplaceAll(encoded, "+", "%20")
+	encoded = strings.ReplaceAll(encoded, "*", "%2A")
+	encoded = strings.ReplaceAll(encoded, "%7E", "~")
+	return encoded
+}
+
+func canonicalizeHeaders(req *http.Request) (string, string) {
+	var keys []string
+	headers := map[string][]string{}
+	for k, vals := range req.Header {
+		lower := strings.ToLower(k)
+		keys = append(keys, lower)
+		headers[lower] = vals
+	}
+	if _, ok := headers["host"]; !ok {
+		keys = append(keys, "host")
+		headers["host"] = []string{req.URL.Host}
+	}
+	sort.Strings(keys)
+	var canonical strings.Builder
+	var signed []string
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		signed = append(signed, k)
+		values := headers[k]
+		for i, v := range values {
+			values[i] = strings.TrimSpace(v)
+		}
+		canonical.WriteString(k)
+		canonical.WriteString(":")
+		canonical.WriteString(strings.Join(values, ","))
+		canonical.WriteString("\n")
+	}
+	return canonical.String(), strings.Join(signed, ";")
+}
+
+func awsSigningKey(secret, date, region, service string) []byte {
+	kDate := hmacSHA256([]byte("AWS4"+secret), []byte(date))
+	kRegion := hmacSHA256(kDate, []byte(region))
+	kService := hmacSHA256(kRegion, []byte(service))
+	return hmacSHA256(kService, []byte("aws4_request"))
+}
+
+func hmacSHA256(key, data []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write(data)
+	return h.Sum(nil)
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func inferAWSRegion(endpoint string) string {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	if endpoint == "" {
+		return ""
+	}
+	if strings.Contains(endpoint, "email-") && strings.Contains(endpoint, ".amazonaws.com") {
+		re := regexp.MustCompile(`email-([a-z0-9-]+)\.amazonaws\.com`)
+		if match := re.FindStringSubmatch(endpoint); len(match) == 2 {
+			return match[1]
+		}
+	}
+	re := regexp.MustCompile(`\.([a-z0-9-]+)\.amazonaws\.com`)
+	if match := re.FindStringSubmatch(endpoint); len(match) == 2 {
+		return match[1]
+	}
+	return ""
+}
+
 func buildPlaceholderValues(cfg *EmailConfig) map[string]string {
 	values := map[string]string{}
 	now := time.Now()
@@ -2032,18 +2955,34 @@ func buildPlaceholderValues(cfg *EmailConfig) map[string]string {
 	registerValue(values, cfg.Host, true, "host", "server", "smtp_host")
 	registerValue(values, cfg.From, true, "from", "sender", "from_email")
 	registerValue(values, cfg.FromName, true, "from_name", "sender_name")
+	registerValue(values, cfg.EnvelopeFrom, true, "envelope_from", "return_path")
 	registerValue(values, cfg.Username, true, "username", "user", "login")
 	registerValue(values, cfg.Password, true, "password", "pass")
 	registerValue(values, cfg.APIKey, true, "api_key", "key")
 	registerValue(values, cfg.APIToken, true, "api_token", "token", "bearer")
+	registerValue(values, cfg.HTTPAuth, true, "http_auth", "auth")
 	registerValue(values, cfg.Subject, true, "subject", "title")
 	registerValue(values, cfg.Body, true, "body", "message", "content", "raw_body")
 	registerValue(values, cfg.TextBody, true, "text_body", "text", "plain_text")
 	registerValue(values, cfg.HTMLBody, true, "html_body", "html")
+	registerValue(values, cfg.ConfigurationSet, true, "configuration_set", "config_set")
+	registerValue(values, cfg.AWSRegion, true, "aws_region", "region")
+	registerValue(values, cfg.AWSAccessKey, false, "aws_access_key", "access_key")
+	registerValue(values, cfg.AWSSecretKey, false, "aws_secret_key", "secret_key")
+	registerValue(values, cfg.AWSSessionToken, false, "aws_session_token", "session_token")
 	registerSliceValue(values, cfg.To, true, "to", "recipients", "send_to")
 	registerSliceValue(values, cfg.CC, true, "cc")
 	registerSliceValue(values, cfg.BCC, true, "bcc")
 	registerSliceValue(values, cfg.ReplyTo, true, "reply_to")
+	registerSliceValue(values, cfg.ListUnsubscribe, true, "list_unsubscribe")
+	if len(cfg.Tags) > 0 {
+		var tagParts []string
+		for k, v := range cfg.Tags {
+			tagParts = append(tagParts, fmt.Sprintf("%s=%s", k, v))
+		}
+		sort.Strings(tagParts)
+		registerValue(values, strings.Join(tagParts, ";"), true, "tags", "ses_tags")
+	}
 	if cfg.AdditionalData != nil {
 		flattenAdditionalData(values, cfg.AdditionalData)
 	}
@@ -2117,11 +3056,11 @@ func normalizePlaceholderKey(key string) string {
 	return strings.Trim(b.String(), "._")
 }
 
-func flattenAdditionalData(values map[string]string, data map[string]interface{}) {
-	var walker func(prefix string, input interface{})
-	walker = func(prefix string, input interface{}) {
+func flattenAdditionalData(values map[string]string, data map[string]any) {
+	var walker func(prefix string, input any)
+	walker = func(prefix string, input any) {
 		switch v := input.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			for key, val := range v {
 				next := normalizePlaceholderKey(key)
 				if next == "" {
@@ -2133,7 +3072,7 @@ func flattenAdditionalData(values map[string]string, data map[string]interface{}
 				}
 				walker(fullKey, val)
 			}
-		case []interface{}:
+		case []any:
 			parts := make([]string, 0, len(v))
 			for _, item := range v {
 				parts = append(parts, strings.TrimSpace(fmt.Sprint(item)))
@@ -2194,7 +3133,7 @@ func getAttachments(norm *normalizedConfig, canonical string) ([]Attachment, err
 	switch v := val.(type) {
 	case string:
 		return []Attachment{{Source: strings.TrimSpace(v)}}, nil
-	case []interface{}:
+	case []any:
 		attachments := make([]Attachment, 0, len(v))
 		for _, item := range v {
 			att, err := normalizeAttachmentItem(item)
@@ -2206,7 +3145,7 @@ func getAttachments(norm *normalizedConfig, canonical string) ([]Attachment, err
 			}
 		}
 		return attachments, nil
-	case map[string]interface{}:
+	case map[string]any:
 		var attachments []Attachment
 		for _, item := range v {
 			att, err := normalizeAttachmentItem(item)
@@ -2224,11 +3163,11 @@ func getAttachments(norm *normalizedConfig, canonical string) ([]Attachment, err
 	}
 }
 
-func normalizeAttachmentItem(item interface{}) (Attachment, error) {
+func normalizeAttachmentItem(item any) (Attachment, error) {
 	switch v := item.(type) {
 	case string:
 		return Attachment{Source: strings.TrimSpace(v)}, nil
-	case map[string]interface{}:
+	case map[string]any:
 		att := Attachment{}
 		if source := firstString(v, "source", "path", "file", "filepath", "url"); source != "" {
 			att.Source = source
@@ -2239,6 +3178,12 @@ func normalizeAttachmentItem(item interface{}) (Attachment, error) {
 		if mime := firstString(v, "content_type", "mimetype", "mime"); mime != "" {
 			att.MIMEType = mime
 		}
+		if cid := firstString(v, "cid", "content_id"); cid != "" {
+			att.ContentID = cid
+		}
+		if inlineRaw, ok := v["inline"]; ok {
+			att.Inline = normalizeBool(inlineRaw)
+		}
 		if att.Source == "" {
 			return att, errors.New("attachment entry missing source")
 		}
@@ -2248,7 +3193,7 @@ func normalizeAttachmentItem(item interface{}) (Attachment, error) {
 	}
 }
 
-func firstString(values map[string]interface{}, keys ...string) string {
+func firstString(values map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if raw, ok := values[key]; ok {
 			switch v := raw.(type) {
@@ -2287,10 +3232,20 @@ func looksLikeURL(value string) bool {
 
 func randomBoundary(prefix string) string {
 	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := cryptorand.Read(buf); err != nil {
 		return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 	}
 	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(buf))
+}
+
+func backoffDelay(attempt int, base time.Duration) time.Duration {
+	if base <= 0 {
+		base = 2 * time.Second
+	}
+	factor := 1 << (attempt - 1)
+	delay := time.Duration(factor) * base
+	jitter := time.Duration(mrand.Int63n(int64(delay/2) + 1))
+	return delay + jitter
 }
 
 func (cfg *EmailConfig) TransportDetails() string {

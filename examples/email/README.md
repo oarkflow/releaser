@@ -72,6 +72,7 @@ The folder includes ready-to-run JSON files:
 | `config.json` | Gmail SMTP example that showcases placeholders across headers and message text. |
 | `config.sendgrid.http.json` | SendGrid HTTP API using the built-in payload builder (set `api_key`). |
 | `config.mailtrap.http.json` | Mailtrap transactional API example (set `token`). |
+| `config.ses.http.json` | AWS SES v2 HTTP API with SigV4 signing (set `aws_access_key`, `aws_secret_key`, `aws_region`). |
 | `config.http.custom.json` | Fully custom HTTP payload posted to `https://httpbin.org/post`, useful for dry-runs. |
 | `config.mailhog.json` | SMTP example wired to a local MailHog instance on `localhost:1025`. |
 | `template.smtp.json` + `payload.release.json` | Demonstrates template/payload split for SMTP releases. |
@@ -117,6 +118,14 @@ go run . config.mailhog.json
 ```
 
 Open `http://localhost:8025` to inspect captured messages. To exercise other templates or payload combinations against MailHog, override just the transport fields in your payload JSON (e.g., set `"host": "localhost"`, `"port": 1025`, `"use_tls": false`, and clear credentials). This keeps the body/placeholder coverage identical while routing everything to the local inbox.
+
+### What's New
+
+- HTTP providers now include SES v2 (SigV4), Postmark, SparkPost, Resend, Mailgun form API, alongside existing SendGrid/Brevo/Mailtrap.
+- AWS SigV4 signing is automatic when `provider` is `ses`/`aws_ses`/`amazon_ses` or when `http_auth` is set to `aws_sigv4` with AWS credentials and region.
+- SMTP auth supports `plain`, `login`, `cram-md5`, or can be disabled with `smtp_auth: none`.
+- Inline attachments are supported; set `"inline": true` and optional `"content_id"` per attachment to embed images into HTML bodies.
+- Delivery headers: `return_path`, `list_unsubscribe`, `list_unsubscribe_post`, SES `configuration_set`, and `tags` are now configurable.
 
 ## Custom Payloads
 
