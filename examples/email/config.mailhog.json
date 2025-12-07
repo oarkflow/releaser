@@ -2,7 +2,7 @@
     "host": "localhost",
     "port": 1025,
     "use_tls": false,
-    "from": "buildbot@example.com",
+    "from": "$(secretr mailhog.from)",
     "to": [
         "qa-team@example.com"
     ],
