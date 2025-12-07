@@ -274,6 +274,34 @@ type Hook struct {
 	Shell bool `yaml:"shell,omitempty"`
 }
 
+// InstallStep represents an install instruction executed before a build.
+// It can either reference a known type (e.g., opengl) or run a custom command like a hook.
+type InstallStep struct {
+	// Type selects a built-in installer (e.g., "opengl"). When set, other fields are ignored.
+	Type string `yaml:"type,omitempty"`
+
+	// Command to run when Type is empty
+	Cmd string `yaml:"cmd,omitempty"`
+
+	// Directory to run the command in
+	Dir string `yaml:"dir,omitempty"`
+
+	// Environment variables
+	Env map[string]string `yaml:"env,omitempty"`
+
+	// Output handling
+	Output string `yaml:"output,omitempty"`
+
+	// If condition
+	If string `yaml:"if,omitempty"`
+
+	// FailFast stops on error
+	FailFast bool `yaml:"fail_fast,omitempty"`
+
+	// Shell runs command in shell
+	Shell bool `yaml:"shell,omitempty"`
+}
+
 // GitConfig contains git-related configuration
 type GitConfig struct {
 	// TagSort for sorting tags
@@ -371,6 +399,9 @@ type Build struct {
 
 	// NoUniqueDistDir disables unique dist directories
 	NoUniqueDistDir bool `yaml:"no_unique_dist_dir,omitempty"`
+
+	// Install instructions to run before building this target
+	Install []InstallStep `yaml:"install,omitempty"`
 
 	// Hooks for this build
 	Hooks BuildHooks `yaml:"hooks,omitempty"`

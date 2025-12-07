@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/oarkflow/releaser/internal/deps"
 	"github.com/oarkflow/releaser/internal/docker"
 	"github.com/oarkflow/releaser/internal/git"
+	"github.com/oarkflow/releaser/internal/hook"
 	"github.com/oarkflow/releaser/internal/nfpm"
 	"github.com/oarkflow/releaser/internal/packaging"
 	"github.com/oarkflow/releaser/internal/publish"
@@ -658,6 +661,12 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 	outputPath := filepath.Join(outputDir, binary)
 	log.Debug("Output path", "path", outputPath)
 
+	// Determine working directory for this build
+	workDir := build.Dir
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
+
 	// Check build cache
 	cacheKey := ""
 	if p.buildCache != nil && !p.options.SkipCache {
@@ -700,6 +709,11 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 		}
 	} else {
 		log.Debug("Build cache disabled or not available")
+	}
+
+	// Run per-build install steps before building from source
+	if err := p.runBuildInstalls(ctx, build, workDir); err != nil {
+		return err
 	}
 
 	log.Info("Building from source", "build", build.ID, "target", target.String(), "builder", build.Builder)
@@ -750,6 +764,159 @@ func (p *Pipeline) buildTarget(ctx context.Context, build config.Build, target B
 
 	log.Info("Build completed successfully", "build", build.ID, "target", target.String(), "output", outputPath)
 	return nil
+}
+
+// runBuildInstalls executes install hooks defined for a build prior to compiling.
+func (p *Pipeline) runBuildInstalls(ctx context.Context, build config.Build, workDir string) error {
+	if len(build.Install) == 0 {
+		return nil
+	}
+
+	// Track typed installers to avoid repeating expensive steps within the same build
+	runTyped := make(map[string]bool)
+
+	for _, step := range build.Install {
+		if step.Type != "" {
+			if runTyped[step.Type] {
+				continue
+			}
+			if err := p.runTypedInstall(ctx, step.Type); err != nil {
+				return fmt.Errorf("install type '%s' failed for build %s: %w", step.Type, build.ID, err)
+			}
+			runTyped[step.Type] = true
+			continue
+		}
+
+		h := config.Hook{
+			Cmd:      step.Cmd,
+			Dir:      step.Dir,
+			Env:      step.Env,
+			Output:   step.Output,
+			If:       step.If,
+			FailFast: step.FailFast,
+			Shell:    step.Shell,
+		}
+
+		exec := hook.NewExecutor([]config.Hook{h}, p.templateCtx, workDir)
+		if err := exec.Execute(ctx); err != nil {
+			return fmt.Errorf("install step failed for build %s: %w", build.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// runTypedInstall executes a built-in installer by type name.
+func (p *Pipeline) runTypedInstall(ctx context.Context, installType string) error {
+	switch installType {
+	case "opengl":
+		return p.installOpenGL(ctx)
+	default:
+		return fmt.Errorf("unknown install type: %s", installType)
+	}
+}
+
+// installOpenGL installs OpenGL development headers and pkg-config metadata across platforms.
+func (p *Pipeline) installOpenGL(ctx context.Context) error {
+	log.Info("Ensuring OpenGL toolchain is installed")
+
+	if hasPkgConfigGL(ctx) {
+		log.Debug("pkg-config reports 'gl' present; skipping install")
+		return nil
+	}
+
+	goos := runtime.GOOS
+	switch goos {
+	case "darwin":
+		cmds := [][]string{
+			{"brew", "install", "pkg-config"},
+			{"brew", "install", "glfw"},
+			{"brew", "install", "--cask", "xquartz"},
+		}
+		for _, c := range cmds {
+			if err := runLogged(ctx, c); err != nil {
+				return fmt.Errorf("failed to install OpenGL dependency via brew: %w", err)
+			}
+		}
+		// Ensure PKG_CONFIG_PATH includes XQuartz
+		pcPath := os.Getenv("PKG_CONFIG_PATH")
+		prefix := "/opt/X11/lib/pkgconfig"
+		if pcPath == "" {
+			pcPath = prefix
+		} else if !strings.Contains(pcPath, prefix) {
+			pcPath = prefix + ":" + pcPath
+		}
+		os.Setenv("PKG_CONFIG_PATH", pcPath)
+	case "linux":
+		pm := detectLinuxPackageManager()
+		switch pm {
+		case "apt":
+			if err := runLogged(ctx, []string{"sudo", "apt", "update", "-qq"}); err != nil {
+				return fmt.Errorf("apt update failed: %w", err)
+			}
+			pkgs := []string{"build-essential", "pkg-config", "libx11-dev", "libxrandr-dev", "libxi-dev", "libxcursor-dev", "libxinerama-dev", "libgl1-mesa-dev", "mesa-common-dev", "libglu1-mesa-dev", "libglvnd-dev"}
+			if err := runLogged(ctx, append([]string{"sudo", "apt", "install", "-y"}, pkgs...)); err != nil {
+				return fmt.Errorf("apt install failed: %w", err)
+			}
+		case "dnf":
+			pkgs := []string{"gcc", "gcc-c++", "make", "pkg-config", "libX11-devel", "libXrandr-devel", "libXi-devel", "libXcursor-devel", "libXinerama-devel", "mesa-libGL-devel", "mesa-libGLU-devel", "libglvnd-devel"}
+			if err := runLogged(ctx, append([]string{"sudo", "dnf", "install", "-y"}, pkgs...)); err != nil {
+				return fmt.Errorf("dnf install failed: %w", err)
+			}
+		case "pacman":
+			pkgs := []string{"base-devel", "pkgconf", "libx11", "libxrandr", "libxi", "libxcursor", "libxinerama", "mesa", "glu", "libglvnd"}
+			if err := runLogged(ctx, append([]string{"sudo", "pacman", "-S", "--noconfirm"}, pkgs...)); err != nil {
+				return fmt.Errorf("pacman install failed: %w", err)
+			}
+		default:
+			return fmt.Errorf("unsupported linux package manager for opengl install; install OpenGL dev headers manually")
+		}
+	default:
+		return fmt.Errorf("opengl installer not supported on %s", goos)
+	}
+
+	if hasPkgConfigGL(ctx) {
+		log.Info("OpenGL detected via pkg-config after install")
+		return nil
+	}
+
+	return fmt.Errorf("pkg-config cannot find 'gl' after installation; please install OpenGL development headers manually")
+}
+
+// hasPkgConfigGL checks whether pkg-config can resolve the gl package.
+func hasPkgConfigGL(ctx context.Context) bool {
+	cmd := exec.CommandContext(ctx, "pkg-config", "--exists", "gl")
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+// detectLinuxPackageManager detects a supported package manager on Linux.
+func detectLinuxPackageManager() string {
+	if _, err := exec.LookPath("apt"); err == nil {
+		return "apt"
+	}
+	if _, err := exec.LookPath("dnf"); err == nil {
+		return "dnf"
+	}
+	if _, err := exec.LookPath("pacman"); err == nil {
+		return "pacman"
+	}
+	return ""
+}
+
+// runLogged runs a command, streaming output to stdout/stderr.
+func runLogged(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	log.Info("Running install command", "cmd", strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	return cmd.Run()
 }
 
 // buildGo builds a Go binary

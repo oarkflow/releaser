@@ -486,6 +486,22 @@ func GenerateSchema() *Schema {
 						Type:  "array",
 						Items: &Schema{Type: "string"},
 					},
+					"install": {
+						Type: "array",
+						Items: &Schema{
+							Type: "object",
+							Properties: map[string]*Schema{
+								"type":      {Type: "string"},
+								"cmd":       {Type: "string"},
+								"env":       {Type: "object"},
+								"dir":       {Type: "string"},
+								"if":        {Type: "string"},
+								"fail_fast": {Type: "boolean"},
+								"shell":     {Type: "boolean"},
+								"output":    {Type: "string"},
+							},
+						},
+					},
 					"ignore": {
 						Type: "array",
 						Items: &Schema{
