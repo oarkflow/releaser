@@ -1,0 +1,36 @@
+# Comprehensive Windows build test
+version: 2
+
+project_name: releaser-test-full
+
+dist: dist-test-full
+
+env:
+  - CGO_ENABLED=0
+
+builds:
+  - id: releaser-multiplatform
+    main: ./cmd/releaser
+    binary: releaser-mp
+    builder: go
+    ldflags:
+      - -s -w
+      - -X main.version=1.0.0-test
+      - -X main.commit=testcommit
+    flags:
+      - -trimpath
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    hooks:
+      pre: echo "Building for {{.Os}}/{{.Arch}}"
+      post: echo "Built {{.Binary}} for {{.Os}}/{{.Arch}}"
+
+# Enable checksum generation to test sha256 fix
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256

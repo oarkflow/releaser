@@ -1,0 +1,31 @@
+# Test configuration for Windows build validation
+version: 2
+
+project_name: releaser-test
+
+dist: dist-test
+
+env:
+  - CGO_ENABLED=0
+
+builds:
+  - id: releaser-windows-test
+    main: ./cmd/releaser
+    binary: releaser-test
+    builder: go
+    ldflags:
+      - -s -w
+      - -X main.version=test
+    flags:
+      - -trimpath
+    goos:
+      - windows
+    goarch:
+      - amd64
+    hooks:
+      pre: echo "Starting Windows build test"
+      post: echo "Completed Windows build test"
+
+# Skip everything except building
+checksum:
+  disable: true

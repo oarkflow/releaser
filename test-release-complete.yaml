@@ -1,0 +1,60 @@
+# Complete Windows Release Test Configuration
+version: 2
+
+project_name: releaser-complete-test
+
+dist: dist-complete-test
+
+env:
+  - CGO_ENABLED=0
+
+before:
+  hooks:
+    - cmd: echo "Starting complete release test"
+
+builds:
+  - id: complete-test
+    main: ./cmd/releaser
+    binary: releaser-test
+    builder: go
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    flags:
+      - -trimpath
+    goos:
+      - windows
+      - linux
+    goarch:
+      - amd64
+    hooks:
+      pre: echo "Building {{.Os}}/{{.Arch}}"
+      post: echo "Built {{.Binary}} for {{.Os}}/{{.Arch}}"
+
+archives:
+  - id: complete-archives
+    builds:
+      - complete-test
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+      - CHANGELOG*
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+after:
+  hooks:
+    - cmd: echo "Release test complete"
+
+# Skip actual publishing for test
+# publish:
+#   disable: true

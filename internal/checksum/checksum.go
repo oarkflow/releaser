@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/oarkflow/releaser/internal/artifact"
 	"github.com/oarkflow/releaser/internal/config"
+	"github.com/oarkflow/releaser/internal/tmpl"
 )
 
 // Algorithm represents a checksum algorithm.
@@ -30,17 +31,19 @@ const (
 
 // Generator generates checksums for artifacts.
 type Generator struct {
-	config  config.Checksum
-	distDir string
-	manager *artifact.Manager
+	config      config.Checksum
+	distDir     string
+	manager     *artifact.Manager
+	templateCtx *tmpl.Context
 }
 
 // NewGenerator creates a new checksum generator.
-func NewGenerator(cfg config.Checksum, distDir string, manager *artifact.Manager) *Generator {
+func NewGenerator(cfg config.Checksum, distDir string, manager *artifact.Manager, templateCtx *tmpl.Context) *Generator {
 	return &Generator{
-		config:  cfg,
-		distDir: distDir,
-		manager: manager,
+		config:      cfg,
+		distDir:     distDir,
+		manager:     manager,
+		templateCtx: templateCtx,
 	}
 }
 
@@ -93,6 +96,16 @@ func (g *Generator) Run() error {
 	checksumFile := g.config.NameTemplate
 	if checksumFile == "" {
 		checksumFile = "checksums.txt"
+	}
+
+	// Apply template to filename
+	if g.templateCtx != nil {
+		expandedFile, err := g.templateCtx.Apply(checksumFile)
+		if err != nil {
+			log.Warn("Failed to apply template to checksum filename, using as-is", "template", checksumFile, "error", err)
+		} else {
+			checksumFile = expandedFile
+		}
 	}
 
 	checksumPath := filepath.Join(g.distDir, checksumFile)

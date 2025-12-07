@@ -551,11 +551,20 @@ func (p *Pipeline) runCommand(ctx context.Context, cmd, dir string) error {
 	// Get shell from environment
 	shell := os.Getenv("SHELL")
 	if shell == "" {
-		shell = "/bin/sh"
+		if runtime.GOOS == "windows" {
+			shell = "powershell.exe"
+		} else {
+			shell = "/bin/sh"
+		}
 	}
 
 	// Run command through shell
-	execCmd := exec.CommandContext(ctx, shell, "-c", cmd)
+	var execCmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		execCmd = exec.CommandContext(ctx, shell, "-Command", cmd)
+	} else {
+		execCmd = exec.CommandContext(ctx, shell, "-c", cmd)
+	}
 	execCmd.Dir = workDir
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
@@ -1097,7 +1106,7 @@ func (p *Pipeline) platformPackages(ctx context.Context) error {
 func (p *Pipeline) checksum(_ context.Context) error {
 	log.Info("Creating checksums")
 
-	generator := checksum.NewGenerator(p.config.Checksum, p.distDir, p.artifacts)
+	generator := checksum.NewGenerator(p.config.Checksum, p.distDir, p.artifacts, p.templateCtx)
 	return generator.Run()
 }
 

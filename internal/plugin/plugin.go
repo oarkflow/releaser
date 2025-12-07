@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"plugin"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/log"
@@ -310,8 +311,18 @@ func (p *ScriptPlugin) Version() string { return "1.0.0" }
 func (p *ScriptPlugin) Type() string    { return "script" }
 
 func (p *ScriptPlugin) Execute(ctx context.Context, event string, data map[string]interface{}) error {
-	// Write script to temp file
-	tmpFile, err := os.CreateTemp("", "releaser-script-*.sh")
+	// Write script to temp file with appropriate extension
+	ext := ".sh"
+	if runtime.GOOS == "windows" {
+		// Use .ps1 for PowerShell or .bat for cmd
+		if strings.Contains(p.shell, "powershell") {
+			ext = ".ps1"
+		} else {
+			ext = ".bat"
+		}
+	}
+
+	tmpFile, err := os.CreateTemp("", "releaser-script-*"+ext)
 	if err != nil {
 		return err
 	}

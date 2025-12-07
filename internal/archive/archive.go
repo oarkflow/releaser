@@ -254,12 +254,17 @@ func (c *Creator) createTarXz(path string, cfg config.Archive, artifacts []artif
 	}()
 
 	// Compress with xz using exec (Go stdlib doesn't have xz support)
+	// Note: xz may not be available on Windows by default
 	cmd := exec.Command("xz", "-c")
 	cmd.Stdin = pr
 	cmd.Stdout = file
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("xz compression failed (is xz installed?): %w", err)
+		// Provide helpful error message for Windows users
+		if strings.Contains(err.Error(), "executable file not found") || strings.Contains(err.Error(), "not recognized") {
+			return fmt.Errorf("xz compression failed: xz tool not found. On Windows, install xz from https://tukaani.org/xz/ or use 'tar.gz' or 'zip' format instead: %w", err)
+		}
+		return fmt.Errorf("xz compression failed: %w", err)
 	}
 
 	// Wait for tar writer to finish

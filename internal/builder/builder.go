@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -171,7 +172,12 @@ func (b *GoBuilder) Build(ctx context.Context, build config.Build, target Target
 
 		// Handle pkg-config
 		if len(build.Cgo.PKGConfig) > 0 {
-			pkgConfigPath := strings.Join(build.Cgo.PKGConfig, ":")
+			// Use OS-specific path separator (: on Unix, ; on Windows)
+			separator := ":"
+			if runtime.GOOS == "windows" {
+				separator = ";"
+			}
+			pkgConfigPath := strings.Join(build.Cgo.PKGConfig, separator)
 			log.Debug("Setting PKG_CONFIG_PATH", "path", pkgConfigPath)
 			env = append(env, fmt.Sprintf("PKG_CONFIG_PATH=%s", pkgConfigPath))
 		}
@@ -724,13 +730,17 @@ func (b *GoBuilder) applyUPXCompression(ctx context.Context, upxConfig *config.U
 func (b *GoBuilder) generateChecksums(output string) error {
 	checksumFile := output + ".sha256"
 
-	cmd := exec.Command("sha256sum", output)
-	checksumOutput, err := cmd.Output()
+	// Read the binary file
+	data, err := os.ReadFile(output)
 	if err != nil {
-		return fmt.Errorf("failed to generate SHA256 checksum: %w", err)
+		return fmt.Errorf("failed to read binary for checksum: %w", err)
 	}
 
-	if err := os.WriteFile(checksumFile, checksumOutput, 0644); err != nil {
+	// Calculate SHA256 using Go's native crypto
+	hash := sha256.Sum256(data)
+	checksumOutput := fmt.Sprintf("%x  %s\n", hash, filepath.Base(output))
+
+	if err := os.WriteFile(checksumFile, []byte(checksumOutput), 0644); err != nil {
 		return fmt.Errorf("failed to write checksum file: %w", err)
 	}
 
@@ -1265,7 +1275,15 @@ func runHookCmd(ctx context.Context, cmdStr, dir string, env []string, tmplCtx *
 
 	log.Debug("Running hook", "cmd", expanded)
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", expanded)
+	// Determine appropriate shell for platform
+	shell := "sh"
+	shellArg := "-c"
+	if runtime.GOOS == "windows" {
+		shell = "powershell.exe"
+		shellArg = "-Command"
+	}
+
+	cmd := exec.CommandContext(ctx, shell, shellArg, expanded)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.Stdout = os.Stdout

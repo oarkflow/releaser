@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/log"
@@ -59,11 +60,19 @@ func (r *Runner) Run(ctx context.Context, hook config.Hook) error {
 	var c *exec.Cmd
 	shellPath := os.Getenv("SHELL")
 	if shellPath == "" {
-		shellPath = "/bin/sh"
+		if runtime.GOOS == "windows" {
+			shellPath = "powershell.exe"
+		} else {
+			shellPath = "/bin/sh"
+		}
 	}
 
 	if hook.Shell {
-		c = exec.CommandContext(ctx, shellPath, "-c", cmd)
+		if runtime.GOOS == "windows" {
+			c = exec.CommandContext(ctx, shellPath, "-Command", cmd)
+		} else {
+			c = exec.CommandContext(ctx, shellPath, "-c", cmd)
+		}
 	} else {
 		// Parse command into args
 		parts := strings.Fields(cmd)
@@ -114,10 +123,19 @@ func (r *Runner) RunCommand(ctx context.Context, cmd string) error {
 
 	shell := os.Getenv("SHELL")
 	if shell == "" {
-		shell = "/bin/sh"
+		if runtime.GOOS == "windows" {
+			shell = "powershell.exe"
+		} else {
+			shell = "/bin/sh"
+		}
 	}
 
-	c := exec.CommandContext(ctx, shell, "-c", cmd)
+	var c *exec.Cmd
+	if runtime.GOOS == "windows" {
+		c = exec.CommandContext(ctx, shell, "-Command", cmd)
+	} else {
+		c = exec.CommandContext(ctx, shell, "-c", cmd)
+	}
 	c.Dir = r.workDir
 	c.Env = os.Environ()
 	c.Stdout = os.Stdout

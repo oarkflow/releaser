@@ -1,0 +1,53 @@
+# Complete Windows test configuration
+version: 2
+
+project_name: releaser-windows-test
+
+dist: dist-windows-full-test
+
+env:
+  - CGO_ENABLED=0
+
+builds:
+  - id: test-build
+    main: ./cmd/releaser
+    binary: releaser-test
+    builder: go
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    flags:
+      - -trimpath
+    goos:
+      - windows
+      - linux
+    goarch:
+      - amd64
+    hooks:
+      pre: echo "Pre-build for {{.Os}}/{{.Arch}}"
+      post: echo "Post-build complete"
+
+# Test archive creation (Windows should use zip, Linux can use tar.gz)
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE*
+      - CHANGELOG*
+
+# Test checksum generation with proper template expansion
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+# Test changelog
+changelog:
+  use: git
+  sort: asc
